@@ -9,11 +9,24 @@ router = APIRouter(
 )
 
 @router.get("/courses", response_model=List[schemas.Course])
-def read_public_courses(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db)):
-    courses = db.query(models.Course).filter(
+def read_public_courses(
+    search: Optional[str] = None,
+    skip: int = 0, 
+    limit: int = 100, 
+    db: Session = Depends(database.get_db)
+):
+    query = db.query(models.Course).filter(
         models.Course.status == models.CourseStatus.PUBLISHED,
         models.Course.is_deleted == False
-    ).offset(skip).limit(limit).all()
+    )
+    
+    if search:
+        query = query.filter(
+            (models.Course.title.ilike(f"%{search}%")) | 
+            (models.Course.description.ilike(f"%{search}%"))
+        )
+        
+    courses = query.offset(skip).limit(limit).all()
     return courses
 
 @router.get("/courses/{course_id}", response_model=schemas.PublicCourseDetail)
