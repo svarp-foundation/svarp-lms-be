@@ -19,14 +19,14 @@ def get_admin_stats(
     current_user: models.User = Depends(auth.require_admin)
 ):
     total_users = db.query(models.User).filter(models.User.role == "learner").count()
-    total_courses = db.query(models.Course).count()
-    published_courses = db.query(models.Course).filter(models.Course.status == "published").count()
+    total_courses = db.query(models.Course).filter(models.Course.is_deleted == False).count()
+    published_courses = db.query(models.Course).filter(models.Course.status == "published", models.Course.is_deleted == False).count()
     total_enrollments = db.query(models.Enrollment).count()
     # Revenue: sum of amounts for successful payments
     paid_payments = db.query(models.CoursePayment).filter(models.CoursePayment.status == models.CoursePaymentStatus.SUCCESS).all()
     total_revenue = sum(p.amount for p in paid_payments)
     recent_users = db.query(models.User).filter(models.User.role == "learner").order_by(models.User.id.desc()).limit(5).all()
-    recent_courses = db.query(models.Course).order_by(models.Course.id.desc()).limit(5).all()
+    recent_courses = db.query(models.Course).filter(models.Course.is_deleted == False).order_by(models.Course.id.desc()).limit(5).all()
     return {
         "total_users": total_users,
         "total_courses": total_courses,
@@ -329,9 +329,9 @@ async def bulk_create_course(
 @router.put("/courses/{course_id}", response_model=schemas.Course)
 def update_course(course_id: int, course_update: schemas.CourseUpdate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
     
-    db_course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    db_course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
     if db_course is None:
-        raise HTTPException(status_code=404, detail="Course not found")
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
     
     update_data = course_update.dict(exclude_unset=True)
     

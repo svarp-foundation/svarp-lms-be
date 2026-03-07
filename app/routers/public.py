@@ -10,12 +10,19 @@ router = APIRouter(
 
 @router.get("/courses", response_model=List[schemas.Course])
 def read_public_courses(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db)):
-    courses = db.query(models.Course).filter(models.Course.status == models.CourseStatus.PUBLISHED).offset(skip).limit(limit).all()
+    courses = db.query(models.Course).filter(
+        models.Course.status == models.CourseStatus.PUBLISHED,
+        models.Course.is_deleted == False
+    ).offset(skip).limit(limit).all()
     return courses
 
 @router.get("/courses/{course_id}", response_model=schemas.PublicCourseDetail)
 def read_public_course(course_id: int, db: Session = Depends(database.get_db)):
-    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.status == models.CourseStatus.PUBLISHED).first()
+    course = db.query(models.Course).filter(
+        models.Course.id == course_id, 
+        models.Course.status == models.CourseStatus.PUBLISHED,
+        models.Course.is_deleted == False
+    ).first()
     if course is None:
         raise HTTPException(status_code=404, detail="Course not found")
     return course

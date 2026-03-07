@@ -11,8 +11,11 @@ router = APIRouter(
 
 @router.get("/courses", response_model=List[schemas.EnrolledCourse])
 def read_my_courses(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_learner)):
-    # Return courses the user is enrolled in
-    enrollments = db.query(models.Enrollment).filter(models.Enrollment.user_id == current_user.id).all()
+    # Return courses the user is enrolled in that are not deleted
+    enrollments = db.query(models.Enrollment).join(models.Course).filter(
+        models.Enrollment.user_id == current_user.id,
+        models.Course.is_deleted == False
+    ).all()
     courses_with_progress = []
     for enr in enrollments:
         prog = completion_engine.calculate_dynamic_progress(db, current_user.id, enr.course_id)
@@ -28,9 +31,9 @@ def enroll_course(course_id: int, db: Session = Depends(database.get_db), curren
         raise HTTPException(status_code=400, detail="Already enrolled")
 
     # Guard: paid courses require a completed payment
-    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
     if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
 
     if course.is_paid:
         completed_payment = db.query(models.CoursePayment).filter(
@@ -299,9 +302,9 @@ def get_course_content(
     if not enrollment:
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
         
-    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
     if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
         
     # Get all completions for this user & course
     completions = db.query(models.LessonCompletion).join(models.Lesson).join(models.Module).filter(
@@ -401,9 +404,10 @@ def get_wishlist(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_learner)
 ):
-    """Return all courses the learner has wishlisted."""
-    items = db.query(models.Wishlist).filter(
-        models.Wishlist.user_id == current_user.id
+    """Return all courses the learner has wishlisted that are not deleted."""
+    items = db.query(models.Wishlist).join(models.Course).filter(
+        models.Wishlist.user_id == current_user.id,
+        models.Course.is_deleted == False
     ).all()
     return [item.course for item in items]
 
@@ -415,9 +419,9 @@ def add_to_wishlist(
     current_user: models.User = Depends(auth.require_learner)
 ):
     """Add a course to the learner's wishlist."""
-    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
     if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
 
     existing = db.query(models.Wishlist).filter(
         models.Wishlist.user_id == current_user.id,
