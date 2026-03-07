@@ -42,6 +42,12 @@ def create_course_payment_order(
     if existing_enrollment:
         raise HTTPException(status_code=400, detail="Already enrolled in this course")
 
+    # Calculate GST (18%)
+    gst_rate = 0.18
+    base_amount = course.price
+    gst_amount = base_amount * gst_rate
+    total_amount = base_amount + gst_amount
+
     # Call CPP to create a Razorpay order
     headers = {
         "x-app-key": CPP_APP_KEY,
@@ -49,13 +55,15 @@ def create_course_payment_order(
     }
     payload = {
         "user_id": current_user.email,
-        "amount": int(payment_data.amount * 100) if payment_data.currency == "INR" else int(payment_data.amount),
+        "amount": int(total_amount * 100) if payment_data.currency == "INR" else int(total_amount),
         "currency": payment_data.currency,
         "media_type": "application/json",
         "plan_type": "course",
         "metadata_info": {
             "course_id": payment_data.course_id,
             "user_id": current_user.id,
+            "base_amount": base_amount,
+            "gst_amount": gst_amount,
         },
     }
 
@@ -77,7 +85,7 @@ def create_course_payment_order(
         user_id=current_user.id,
         course_id=payment_data.course_id,
         payment_id=order_data.get("razorpay_order_id"),
-        amount=payment_data.amount,
+        amount=total_amount,
         currency=payment_data.currency,
         status=order_data.get("status", "created"),
     )
@@ -88,7 +96,7 @@ def create_course_payment_order(
     return schemas.CoursePaymentOrderResponse(
         id=db_payment.id,
         razorpay_order_id=order_data.get("razorpay_order_id"),
-        amount=payment_data.amount,
+        amount=total_amount,
         currency=payment_data.currency,
         key_id=order_data.get("key_id"),
         app_name="SVARP GLOBAL ACADEMY",
