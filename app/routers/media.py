@@ -14,6 +14,7 @@ router = APIRouter(
 async def get_secure_media(
     filename: str,
     token: str = Query(..., description="JWT Bearer Token required for media access"),
+    download: bool = Query(False, description="Set to true to trigger file download"),
     db: Session = Depends(database.get_db)
 ):
     """
@@ -41,20 +42,25 @@ async def get_secure_media(
                 from .. import certificate_generator
                 
                 if filename.endswith(".pdf"):
+                    from .. import completion_engine
+                    progress = completion_engine.calculate_dynamic_progress(db, student.id, course.id)
+                    
                     content_bytes = certificate_generator.generate_certificate_bytes(
                         student_name=student.full_name,
                         course_title=course.title,
-                        cert_code=cert.certificate_code
+                        cert_code=cert.certificate_code,
+                        progress=progress
                     )
                     media_type = "application/pdf"
                 else: # .png
                     content_bytes = certificate_generator.generate_qr_code_bytes(cert_code=cert.certificate_code)
                     media_type = "image/png"
                     
+                disposition = "attachment" if download else "inline"
                 return Response(
                     content=content_bytes,
                     media_type=media_type,
-                    headers={"Content-Disposition": f'inline; filename="{filename}"'}
+                    headers={"Content-Disposition": f'{disposition}; filename="{filename}"'}
                 )
         raise HTTPException(status_code=404, detail="Certificate or QR Code not found")
 
@@ -76,8 +82,9 @@ async def get_secure_media(
     if not media_type:
         media_type = "application/octet-stream"
 
+    disposition = "attachment" if download else "inline"
     return FileResponse(
         file_path, 
         media_type=media_type, 
-        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'}
     )
