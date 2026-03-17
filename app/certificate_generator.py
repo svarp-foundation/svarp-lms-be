@@ -35,7 +35,7 @@ def generate_qr_code_bytes(cert_code: str, frontend_url: str = DEFAULT_FRONTEND_
     qr_buffer.seek(0)
     return qr_buffer.getvalue()
 
-def generate_certificate_bytes(student_name: str, course_title: str, cert_code: str, frontend_url: str = DEFAULT_FRONTEND_URL, progress: int = 100) -> bytes:
+def generate_certificate_bytes(student_name: str, course_title: str, cert_code: str, profile_picture_url: str = None, frontend_url: str = DEFAULT_FRONTEND_URL, progress: int = 100) -> bytes:
     """
     Generates a premium DESIGNER PDF certificate dynamically, matching the frontend's layout perfectly.
     """
@@ -106,8 +106,8 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     
     # 6c. Profile Image (Circular)
     try:
-        # Default profile image URL
-        profile_url = "https://i.pravatar.cc/150?u=svarp_default"
+        # User dynamic profile image URL if provided, else fallback
+        profile_url = profile_picture_url or "https://i.pravatar.cc/150?u=svarp_default"
         # Since this is a default, we can try to fetch it. 
         # For simplicity and speed in a backend, we'll try it, but fall back gracefully.
         response = requests.get(profile_url, timeout=2)

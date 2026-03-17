@@ -13,7 +13,8 @@ CPP_API_URL = os.getenv("CPP_API_URL")
 CPP_APP_KEY = os.getenv("CPP_APP_KEY")
 CPP_APP_SECRET = os.getenv("CPP_APP_SECRET")
 SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
-SVARP_VERIFY_URL = "https://svarp-website-be.svarp.cloud/admin/verify-user"
+SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
 
 @router.post("/create-order", response_model=schemas.CoursePaymentOrderResponse)
@@ -25,6 +26,7 @@ def create_course_payment_order(
     """Create a Razorpay order for a paid course via CPP."""
 
     # NEW: Verify User Profile Status first
+    phone_number = None
     try:
         verify_response = requests.get(
             f"{SVARP_VERIFY_URL}?email={current_user.email}",
@@ -32,6 +34,7 @@ def create_course_payment_order(
         )
         verify_response.raise_for_status()
         verification_data = verify_response.json()
+        phone_number = verification_data.get("phone_number")
         
         if not verification_data.get("payment_readiness", {}).get("ready"):
             raise HTTPException(
@@ -45,6 +48,7 @@ def create_course_payment_order(
         print(f"User Verification Error: {e}")
         # Optionally allow if verification system is down, or block. 
         # Here we block for security.
+        phone_number = None
         raise HTTPException(status_code=502, detail="User verification system unavailable")
 
     # Validate course exists and is paid
@@ -126,6 +130,7 @@ def create_course_payment_order(
         key_id=order_data.get("key_id"),
         app_name="SVARP GLOBAL ACADEMY",
         status=db_payment.status,
+        phone_number=phone_number,
     )
 
 

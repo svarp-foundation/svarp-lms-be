@@ -3,12 +3,17 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 import os
 import mimetypes
+import requests
 from .. import auth, database, models
 
 router = APIRouter(
     prefix="/media",
     tags=["media"]
 )
+
+SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
+SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
 @router.get("/{filename}")
 async def get_secure_media(
@@ -45,10 +50,27 @@ async def get_secure_media(
                     from .. import completion_engine
                     progress = completion_engine.calculate_dynamic_progress(db, student.id, course.id)
                     
+                    # Fetch profile picture from SVARP Admin API
+                    profile_picture_url = None
+                    try:
+                        verify_response = requests.get(
+                            f"{SVARP_VERIFY_URL}?email={student.email}",
+                            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
+                            timeout=5
+                        )
+                        if verify_response.status_code == 200:
+                            user_data = verify_response.json()
+                            profile_path = user_data.get("profile_picture_path")
+                            if profile_path:
+                                profile_picture_url = f"{SVARP_ADMIN_BASE_URL}{profile_path}"
+                    except Exception as e:
+                        print(f"Error fetching profile picture for certificate: {e}")
+
                     content_bytes = certificate_generator.generate_certificate_bytes(
                         student_name=student.full_name,
                         course_title=course.title,
                         cert_code=cert.certificate_code,
+                        profile_picture_url=profile_picture_url,
                         progress=progress
                     )
                     media_type = "application/pdf"

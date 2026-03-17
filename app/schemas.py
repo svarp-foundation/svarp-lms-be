@@ -314,6 +314,7 @@ class CoursePaymentOrderResponse(BaseModel):
     key_id: str
     app_name: str
     status: str
+    phone_number: Optional[str] = None
 
 class CoursePaymentVerify(BaseModel):
     razorpay_order_id: str
