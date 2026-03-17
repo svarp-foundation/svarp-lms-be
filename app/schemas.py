@@ -257,6 +257,7 @@ class PublicCertificateVerification(BaseModel):
     issue_date: datetime
     status: str
     certificate_code: str
+    profile_picture_url: Optional[str] = None
 
 class LessonStatus(BaseModel):
     id: int
@@ -285,6 +286,7 @@ class CourseContent(BaseModel):
     modules: List[ModuleStatus] = []
     progress: int
     certificate_pdf_url: Optional[str] = None
+    profile_picture_url: Optional[str] = None
     class Config:
         orm_mode = True
 

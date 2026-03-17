@@ -1,3 +1,5 @@
+import os
+import requests
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -8,6 +10,10 @@ router = APIRouter(
     prefix="/learner",
     tags=["learner"],
 )
+
+SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
+SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
 @router.get("/courses", response_model=List[schemas.EnrolledCourse])
 def read_my_courses(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_learner)):
@@ -389,12 +395,29 @@ def get_course_content(
         models.Certificate.revoked_at == None
     ).first()
 
+    # Fetch profile picture from SVARP Admin API
+    profile_picture_url = None
+    try:
+        verify_response = requests.get(
+            f"{SVARP_VERIFY_URL}?email={current_user.email}",
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
+            timeout=5
+        )
+        if verify_response.status_code == 200:
+            user_data = verify_response.json()
+            profile_path = user_data.get("profile_picture_path")
+            if profile_path:
+                profile_picture_url = f"{SVARP_ADMIN_BASE_URL}{profile_path}"
+    except Exception as e:
+        print(f"Error fetching profile picture for course content: {e}")
+
     return schemas.CourseContent(
         id=course.id,
         title=course.title,
         modules=modules_data,
         progress=prog,
-        certificate_pdf_url=cert.pdf_url if cert else None
+        certificate_pdf_url=cert.pdf_url if cert else None,
+        profile_picture_url=profile_picture_url
     )
 
 # ─── Wishlist Endpoints ─────────────────────────────────────────────────────
