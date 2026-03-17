@@ -12,6 +12,8 @@ router = APIRouter(
 CPP_API_URL = os.getenv("CPP_API_URL")
 CPP_APP_KEY = os.getenv("CPP_APP_KEY")
 CPP_APP_SECRET = os.getenv("CPP_APP_SECRET")
+SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
+SVARP_VERIFY_URL = "https://svarp-website-be.svarp.cloud/admin/verify-user"
 
 
 @router.post("/create-order", response_model=schemas.CoursePaymentOrderResponse)
@@ -21,6 +23,29 @@ def create_course_payment_order(
     current_user: models.User = Depends(auth.require_learner),
 ):
     """Create a Razorpay order for a paid course via CPP."""
+
+    # NEW: Verify User Profile Status first
+    try:
+        verify_response = requests.get(
+            f"{SVARP_VERIFY_URL}?email={current_user.email}",
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY}
+        )
+        verify_response.raise_for_status()
+        verification_data = verify_response.json()
+        
+        if not verification_data.get("payment_readiness", {}).get("ready"):
+            raise HTTPException(
+                status_code=403, 
+                detail={
+                    "message": "Profile verification required",
+                    "readiness": verification_data.get("payment_readiness")
+                }
+            )
+    except requests.RequestException as e:
+        print(f"User Verification Error: {e}")
+        # Optionally allow if verification system is down, or block. 
+        # Here we block for security.
+        raise HTTPException(status_code=502, detail="User verification system unavailable")
 
     # Validate course exists and is paid
     course = db.query(models.Course).filter(
