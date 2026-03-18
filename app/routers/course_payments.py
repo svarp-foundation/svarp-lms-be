@@ -39,6 +39,9 @@ def create_course_payment_order(
             )
         verify_response.raise_for_status()
         verification_data = verify_response.json()
+        if not verification_data:
+            raise HTTPException(status_code=502, detail="User verification system returned empty response")
+            
         phone_number = verification_data.get("phone_number")
         
         if not verification_data.get("payment_readiness", {}).get("ready"):

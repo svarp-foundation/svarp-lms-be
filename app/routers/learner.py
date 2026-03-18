@@ -405,9 +405,10 @@ def get_course_content(
         )
         if verify_response.status_code == 200:
             user_data = verify_response.json()
-            profile_path = user_data.get("profile_picture_path")
-            if profile_path:
-                profile_picture_url = f"{SVARP_ADMIN_BASE_URL}{profile_path}"
+            if user_data:
+                profile_path = user_data.get("profile_picture_path")
+                if profile_path:
+                    profile_picture_url = f"{SVARP_ADMIN_BASE_URL}{profile_path}"
     except Exception as e:
         print(f"Error fetching profile picture for course content: {e}")
 
