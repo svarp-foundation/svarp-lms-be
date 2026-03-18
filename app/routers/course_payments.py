@@ -32,6 +32,11 @@ def create_course_payment_order(
             f"{SVARP_VERIFY_URL}?email={current_user.email}",
             headers={"X-API-Key": SVARP_ADMIN_API_KEY}
         )
+        if verify_response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="please register to our webssite with same email svarp.org and complete the documentation need to contimue to payment"
+            )
         verify_response.raise_for_status()
         verification_data = verify_response.json()
         phone_number = verification_data.get("phone_number")
