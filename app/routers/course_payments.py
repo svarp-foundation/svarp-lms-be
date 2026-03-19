@@ -44,12 +44,13 @@ def create_course_payment_order(
             
         phone_number = verification_data.get("phone_number")
         
-        if not verification_data.get("payment_readiness", {}).get("ready"):
+        readiness = verification_data.get("payment_readiness") or {}
+        if not readiness.get("ready"):
             raise HTTPException(
                 status_code=403, 
                 detail={
                     "message": "Profile verification required",
-                    "readiness": verification_data.get("payment_readiness")
+                    "readiness": readiness
                 }
             )
     except requests.RequestException as e:
