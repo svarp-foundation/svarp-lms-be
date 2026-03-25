@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from jose import jwt, JWTError
-from .. import database, models, schemas, auth
+from .. import database, models, schemas, auth, utils
 
 router = APIRouter(
     tags=["auth"],
@@ -98,4 +98,6 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_d
 
 @router.get("/users/me", response_model=schemas.User)
 async def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
+    user_data = utils.fetch_user_membership(current_user.email)
+    current_user.membership = user_data.get("membership") if user_data else None
     return current_user

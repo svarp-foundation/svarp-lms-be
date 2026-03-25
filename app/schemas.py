@@ -15,6 +15,7 @@ class User(UserBase):
     role: str
     is_suspended: bool = False
     created_at: datetime
+    membership: Optional[dict] = None
     class Config:
         orm_mode = True
 
@@ -39,6 +40,7 @@ class CourseBase(BaseModel):
     require_assignment_approval: Optional[bool] = False
     is_paid: Optional[bool] = False
     price: Optional[float] = 0.0
+    discounted_price: Optional[float] = None
 
 class CourseCreate(CourseBase):
     pass

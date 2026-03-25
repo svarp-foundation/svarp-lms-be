@@ -218,11 +218,13 @@ def create_course(course: schemas.CourseCreate, db: Session = Depends(database.g
 def parse_course_file(content: str):
     import re
     # Split by the section markers
-    sections = re.split(r'---(COURSE|MODULE|LESSON|END_LESSON)---', content)
+    sections = re.split(r'---(COURSE|MODULE|LESSON|END_LESSON|ASSIGNMENT|QUESTION|END_ASSIGNMENT)---', content)
     
     course_data = {}
     modules = []
     current_module = None
+    current_lesson = None
+    current_assignment = None
     
     i = 1
     while i < len(sections):
@@ -245,7 +247,7 @@ def parse_course_file(content: str):
         elif tag == 'LESSON':
             if not current_module:
                 continue
-            lesson_info = {}
+            current_lesson = {}
             lines = body.split('\n')
             for idx, line in enumerate(lines):
                 if ':' in line:
@@ -253,11 +255,35 @@ def parse_course_file(content: str):
                     k = key.strip().lower().replace(' ', '_')
                     if k == 'content':
                         # Join the rest of the lines as content
-                        lesson_info['content'] = val.strip() + ("\n" + "\n".join(lines[idx+1:]) if idx+1 < len(lines) else "")
+                        current_lesson['content'] = val.strip() + ("\n" + "\n".join(lines[idx+1:]) if idx+1 < len(lines) else "")
                         break
                     else:
-                        lesson_info[k] = val.strip()
-            current_module['lessons'].append(lesson_info)
+                        current_lesson[k] = val.strip()
+            current_module['lessons'].append(current_lesson)
+        elif tag == 'ASSIGNMENT':
+            if not current_lesson:
+                continue
+            current_assignment = {'questions': []}
+            for line in body.split('\n'):
+                if ':' in line:
+                    key, val = line.split(':', 1)
+                    current_assignment[key.strip().lower().replace(' ', '_')] = val.strip()
+            current_lesson['assignment_data'] = current_assignment
+        elif tag == 'QUESTION':
+            if not current_assignment:
+                continue
+            current_question = {'options': []}
+            for line in body.split('\n'):
+                if line.startswith('Option:'):
+                    opt_body = line[len('Option:'):].strip()
+                    # Check for (is_correct=true)
+                    is_correct = 'is_correct=true' in opt_body.lower()
+                    opt_text = re.sub(r'\(is_correct=(true|false)\)', '', opt_body, flags=re.IGNORECASE).strip()
+                    current_question['options'].append({'text': opt_text, 'is_correct': is_correct})
+                elif ':' in line:
+                    key, val = line.split(':', 1)
+                    current_question[key.strip().lower().replace(' ', '_')] = val.strip()
+            current_assignment['questions'].append(current_question)
             
     return course_data, modules
 
@@ -311,6 +337,38 @@ async def bulk_create_course(
                     order=l_idx + 1
                 )
                 db.add(db_lesson)
+                db.flush()
+
+                # If assignment, create assignment and questions
+                if l_data.get('type', '').lower() == 'assignment' and 'assignment_data' in l_data:
+                    a_data = l_data['assignment_data']
+                    db_assignment = models.Assignment(
+                        course_id=db_course.id,
+                        lesson_id=db_lesson.id,
+                        title=a_data.get('title', l_data.get('title', 'Assignment')),
+                        description=a_data.get('description', 'Assignment description')
+                    )
+                    db.add(db_assignment)
+                    db.flush()
+
+                    for q_idx, q_data in enumerate(a_data.get('questions', [])):
+                        db_question = models.Question(
+                            assignment_id=db_assignment.id,
+                            question_text=q_data.get('text', q_data.get('question_text', '')),
+                            question_type=q_data.get('type', 'subjective').lower(),
+                            order=int(q_data.get('order', q_idx + 1))
+                        )
+                        db.add(db_question)
+                        db.flush()
+
+                        if db_question.question_type == 'mcq':
+                            for opt in q_data.get('options', []):
+                                db_option = models.QuestionOption(
+                                    question_id=db_question.id,
+                                    option_text=opt['text'],
+                                    is_correct=opt['is_correct']
+                                )
+                                db.add(db_option)
         
         db.commit()
         db.refresh(db_course)

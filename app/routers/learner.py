@@ -4,16 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from sqlalchemy.sql import func
-from .. import models, schemas, database, auth, completion_engine
+from .. import models, schemas, database, auth, completion_engine, utils
 
 router = APIRouter(
     prefix="/learner",
     tags=["learner"],
 )
 
-SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
-SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
-SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
+# Note: SVARP_ADMIN_BASE_URL etc. are now in utils.py
 
 @router.get("/courses", response_model=List[schemas.EnrolledCourse])
 def read_my_courses(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_learner)):
@@ -42,16 +40,20 @@ def enroll_course(course_id: int, db: Session = Depends(database.get_db), curren
         raise HTTPException(status_code=404, detail="Course not found or deleted")
 
     if course.is_paid:
-        completed_payment = db.query(models.CoursePayment).filter(
-            models.CoursePayment.user_id == current_user.id,
-            models.CoursePayment.course_id == course_id,
-            models.CoursePayment.status == "success",
-        ).first()
-        if not completed_payment:
-            raise HTTPException(
-                status_code=402,
-                detail="Payment required. Please complete payment before enrolling in this course.",
-            )
+        # Check membership first - members get it for free
+        user_data = utils.fetch_user_membership(current_user.email)
+        if not utils.is_active_member(user_data):
+            # Non-members must have a completed payment
+            completed_payment = db.query(models.CoursePayment).filter(
+                models.CoursePayment.user_id == current_user.id,
+                models.CoursePayment.course_id == course_id,
+                models.CoursePayment.status == "success",
+            ).first()
+            if not completed_payment:
+                raise HTTPException(
+                    status_code=402,
+                    detail="Payment required. Please complete payment before enrolling in this course.",
+                )
 
     enrollment = models.Enrollment(user_id=current_user.id, course_id=course_id)
     db.add(enrollment)
@@ -397,20 +399,11 @@ def get_course_content(
 
     # Fetch profile picture from SVARP Admin API
     profile_picture_url = None
-    try:
-        verify_response = requests.get(
-            f"{SVARP_VERIFY_URL}?email={current_user.email}",
-            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
-            timeout=5
-        )
-        if verify_response.status_code == 200:
-            user_data = verify_response.json()
-            if user_data:
-                profile_path = user_data.get("profile_picture_path")
-                if profile_path:
-                    profile_picture_url = f"{SVARP_ADMIN_BASE_URL}{profile_path}"
-    except Exception as e:
-        print(f"Error fetching profile picture for course content: {e}")
+    user_data = utils.fetch_user_membership(current_user.email)
+    if user_data:
+        profile_path = user_data.get("profile_picture_path")
+        if profile_path:
+            profile_picture_url = f"{utils.SVARP_ADMIN_BASE_URL}{profile_path}"
 
     return schemas.CourseContent(
         id=course.id,
