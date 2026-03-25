@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from .. import models, schemas, database, auth
+from .. import models, schemas, database, auth, utils
 import os
 import requests
 
@@ -27,6 +27,7 @@ def create_course_payment_order(
 
     # NEW: Verify User Profile Status first
     phone_number = None
+    verification_data = None
     try:
         verify_response = requests.get(
             f"{SVARP_VERIFY_URL}?email={current_user.email}",
@@ -71,6 +72,10 @@ def create_course_payment_order(
 
     if not course.is_paid:
         raise HTTPException(status_code=400, detail="This course is free — no payment required")
+    
+    # MEMBERSHIP GUARD: Members get it for free
+    if utils.is_active_member(verification_data):
+         raise HTTPException(status_code=400, detail="You have an active membership. You can enroll in this course for free from the course page.")
 
     # Check if already enrolled (payment already done)
     existing_enrollment = db.query(models.Enrollment).filter(
