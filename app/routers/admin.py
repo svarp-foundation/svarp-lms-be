@@ -155,6 +155,78 @@ def list_course_assignments(
     assignments = db.query(models.Assignment).filter(models.Assignment.course_id == course_id).all()
     return assignments
 
+@router.post("/courses/{course_id}/generate-final-assignment", response_model=schemas.Assignment)
+def generate_final_assignment(
+    course_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    """
+    Consolidate all questions from all lesson-based assignments in the course 
+    into a single course-level Final Assignment.
+    """
+    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    # 1. Find all lesson-assignments in this course
+    lesson_assignments = db.query(models.Assignment).join(models.Lesson).join(models.Module).filter(
+        models.Module.course_id == course_id
+    ).all()
+
+    if not lesson_assignments:
+        raise HTTPException(status_code=400, detail="No assignments found in lessons to consolidate.")
+
+    # 2. Check if a final assignment already exists (course_id set, lesson_id None)
+    db_final = db.query(models.Assignment).filter(
+        models.Assignment.course_id == course_id,
+        models.Assignment.lesson_id == None
+    ).first()
+
+    if db_final:
+        # Optional: could update it, let's delete and recreation for simplicity or just error
+        # Let's delete existing questions and recreate
+        db.query(models.Question).filter(models.Question.assignment_id == db_final.id).delete()
+    else:
+        db_final = models.Assignment(
+            course_id=course_id,
+            lesson_id=None,
+            title=f"Final Assignment: {course.title}",
+            description="Complete this final assignment covering all course topics to receive your certificate."
+        )
+        db.add(db_final)
+        db.flush()
+
+    # 3. Copy questions
+    q_count = 0
+    for l_asgn in lesson_assignments:
+        for q in l_asgn.questions:
+            q_count += 1
+            new_q = models.Question(
+                assignment_id=db_final.id,
+                question_text=q.question_text,
+                question_type=q.question_type,
+                order=q_count
+            )
+            db.add(new_q)
+            db.flush()
+
+            if q.question_type == models.QuestionType.MCQ:
+                for opt in q.options:
+                    new_opt = models.QuestionOption(
+                        question_id=new_q.id,
+                        option_text=opt.option_text,
+                        is_correct=opt.is_correct
+                    )
+                    db.add(new_opt)
+
+    # 4. Enable require_final_assignment for the course
+    course.require_final_assignment = True
+    
+    db.commit()
+    db.refresh(db_final)
+    return db_final
+
 @router.post("/users/bulk", status_code=status.HTTP_201_CREATED)
 async def bulk_create_users(
     file: UploadFile = File(...),
@@ -573,36 +645,30 @@ def review_submission(
     if review_data.status == models.SubmissionStatus.APPROVED:
         # Check if assignment is linked to a lesson
         assignment = submission.assignment
-        if assignment and assignment.lesson_id:
-            # Check if completion already exists
-            existing_completion = db.query(models.LessonCompletion).filter(
-                models.LessonCompletion.user_id == submission.user_id,
-                models.LessonCompletion.lesson_id == assignment.lesson_id
-            ).first()
-            
-            if not existing_completion:
-                completion = models.LessonCompletion(
-                    user_id=submission.user_id, 
-                    lesson_id=assignment.lesson_id
-                )
-                db.add(completion)
+        if assignment:
+            if assignment.lesson_id:
+                # Check if completion already exists
+                existing_completion = db.query(models.LessonCompletion).filter(
+                    models.LessonCompletion.user_id == submission.user_id,
+                    models.LessonCompletion.lesson_id == assignment.lesson_id
+                ).first()
                 
-                # Recalculate progress for the course
-                # We need to find the course_id first. 
-                # Lesson -> Module -> Course
+                if not existing_completion:
+                    completion = models.LessonCompletion(
+                        user_id=submission.user_id, 
+                        lesson_id=assignment.lesson_id
+                    )
+                    db.add(completion)
+            
+            # Always check for course completion if an assignment was approved
+            if assignment.course_id:
+                 completion_engine.check_course_completion(db, submission.user_id, assignment.course_id)
+            elif assignment.lesson_id:
+                # Fallback path to find course_id via lesson
                 lesson = db.query(models.Lesson).filter(models.Lesson.id == assignment.lesson_id).first()
                 if lesson and lesson.module:
                     course_id = lesson.module.course_id
-                    
-                    # Verify enrollment exists
-                    enrollment = db.query(models.Enrollment).filter(
-                        models.Enrollment.user_id == submission.user_id,
-                        models.Enrollment.course_id == course_id
-                    ).first()
-                    
-                    if enrollment:
-                        # Trigger dynamic completion check
-                        completion_engine.check_course_completion(db, submission.user_id, course_id)
+                    completion_engine.check_course_completion(db, submission.user_id, course_id)
 
     db.commit()
     return {"message": "Submission reviewed successfully"}

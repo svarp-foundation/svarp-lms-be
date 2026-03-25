@@ -38,6 +38,7 @@ class CourseBase(BaseModel):
     passing_score: Optional[int] = 70
     require_all_lessons_completed: Optional[bool] = True
     require_assignment_approval: Optional[bool] = False
+    require_final_assignment: Optional[bool] = False
     is_paid: Optional[bool] = False
     price: Optional[float] = 0.0
     discounted_price: Optional[float] = None
@@ -53,6 +54,7 @@ class CourseUpdate(BaseModel):
     passing_score: Optional[int] = None
     require_all_lessons_completed: Optional[bool] = None
     require_assignment_approval: Optional[bool] = None
+    require_final_assignment: Optional[bool] = None
     is_deleted: Optional[bool] = None
     is_paid: Optional[bool] = None
     price: Optional[float] = None
@@ -287,6 +289,8 @@ class CourseContent(BaseModel):
     title: str
     modules: List[ModuleStatus] = []
     progress: int
+    require_final_assignment: bool = False
+    final_assignment: Optional[AssignmentDetail] = None
     certificate_pdf_url: Optional[str] = None
     profile_picture_url: Optional[str] = None
     class Config:

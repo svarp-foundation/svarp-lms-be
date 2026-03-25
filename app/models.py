@@ -42,6 +42,7 @@ class Course(Base):
     passing_score = Column(Integer, default=70) # Percent
     require_all_lessons_completed = Column(Boolean, default=True)
     require_assignment_approval = Column(Boolean, default=False)
+    require_final_assignment = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=False)
     price = Column(Float, default=0.0)

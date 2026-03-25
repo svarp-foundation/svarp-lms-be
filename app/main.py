@@ -27,8 +27,6 @@ def startup_event():
 
 # CORS Setup
 origins = [
-    "http://localhost:3000",
-    "http://localhost:5173", # Vite default 
     "*"
 ]
 

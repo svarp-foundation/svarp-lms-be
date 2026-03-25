@@ -405,11 +405,21 @@ def get_course_content(
         if profile_path:
             profile_picture_url = f"{utils.SVARP_ADMIN_BASE_URL}{profile_path}"
 
+    # Fetch Final Assignment if required
+    final_assignment = None
+    if course.require_final_assignment:
+        final_assignment = db.query(models.Assignment).filter(
+            models.Assignment.course_id == course_id,
+            models.Assignment.lesson_id == None
+        ).first()
+
     return schemas.CourseContent(
         id=course.id,
         title=course.title,
         modules=modules_data,
         progress=prog,
+        require_final_assignment=course.require_final_assignment,
+        final_assignment=schemas.AssignmentDetail.model_validate(final_assignment, from_attributes=True) if final_assignment else None,
         certificate_pdf_url=cert.pdf_url if cert else None,
         profile_picture_url=profile_picture_url
     )

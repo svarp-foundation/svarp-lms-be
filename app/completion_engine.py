@@ -17,7 +17,24 @@ def calculate_dynamic_progress(db: Session, user_id: int, course_id: int) -> int
         models.Module.course_id == course_id
     ).count()
 
-    return int((completed_lessons_count / total_lessons) * 100)
+    print(f"[DEBUG] completed_lessons_count: {completed_lessons_count}")
+
+    # Add assignments that have been submitted but not yet approved (Submitted or Under Review)
+    submitted_assignment_lessons_count = db.query(models.Submission).join(models.Assignment).join(models.Lesson).join(models.Module).filter(
+        models.Submission.user_id == user_id,
+        models.Module.course_id == course_id,
+        models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW])
+    ).filter(
+        # Avoid double counting if already in LessonCompletion
+        ~models.Lesson.id.in_(
+            db.query(models.LessonCompletion.lesson_id).filter(models.LessonCompletion.user_id == user_id)
+        )
+    ).count()
+
+    print(f"[DEBUG] submitted_assignment_lessons_count: {submitted_assignment_lessons_count}")
+    print(f"[DEBUG] total_lessons: {total_lessons}")
+
+    return int(((completed_lessons_count + submitted_assignment_lessons_count) / total_lessons) * 100)
 
 def check_course_completion(db: Session, user_id: int, course_id: int):
     """
@@ -59,6 +76,21 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
             ).first()
             if not submission:
                 return # Missing an approved assignment
+
+    # 4. Check Final Assignment (Course-Level Assignment)
+    if course.require_final_assignment:
+        db_final = db.query(models.Assignment).filter(
+            models.Assignment.course_id == course_id,
+            models.Assignment.lesson_id == None
+        ).first()
+        if db_final:
+            submission = db.query(models.Submission).filter(
+                models.Submission.assignment_id == db_final.id,
+                models.Submission.user_id == user_id,
+                models.Submission.status == models.SubmissionStatus.APPROVED
+            ).first()
+            if not submission:
+                return # Final Assignment not approved yet
 
     # --- SUCCESS! TRIGGER CERTIFICATE ---
     
