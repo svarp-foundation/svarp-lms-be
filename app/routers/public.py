@@ -3,12 +3,22 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import requests
+from sqlalchemy import func
 from .. import models, schemas, database, auth, utils
 
 router = APIRouter(
     prefix="/public",
     tags=["public"],
 )
+
+@router.get("/featured-courses", response_model=List[schemas.Course])
+def read_featured_courses(db: Session = Depends(database.get_db)):
+    """Returns 4 random published courses for the landing page."""
+    courses = db.query(models.Course).filter(
+        models.Course.status == models.CourseStatus.PUBLISHED,
+        models.Course.is_deleted == False
+    ).order_by(func.random()).limit(4).all()
+    return courses
 
 # Note: SVARP_ADMIN_BASE_URL etc. are now in utils.py
 
