@@ -14,8 +14,8 @@ models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI(title="SVARP GLOBAL ACADEMY API")
 
 # Create static directory if it doesn't exist
-if not os.path.exists("backend/static/uploads"):
-    os.makedirs("backend/static/uploads")
+if not os.path.exists("static/uploads"):
+    os.makedirs("static/uploads")
 
 # Security Fix: We removed the global static mount to protect premium paid media.
 # Media is served via the authenticated /media/ router.

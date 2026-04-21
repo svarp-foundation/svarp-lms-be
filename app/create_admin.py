@@ -17,15 +17,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def create_super_user(db, email, password, full_name):
-    """Core logic to create a super user."""
-    # Check if user exists
+    """Core logic to create or update a super user."""
+    hashed_password = auth.get_password_hash(password)
     existing_user = db.query(models.User).filter(models.User.email == email).first()
+    
     if existing_user:
-        logger.info(f"User with email {email} already exists.")
+        logger.info(f"User with email {email} already exists. Updating details...")
+        existing_user.full_name = full_name
+        existing_user.hashed_password = hashed_password
+        existing_user.role = models.UserRole.ADMIN
+        db.commit()
+        logger.info(f"Success! Admin user {email} updated.")
         return
 
     try:
-        hashed_password = auth.get_password_hash(password)
         new_admin = models.User(
             email=email,
             full_name=full_name,
