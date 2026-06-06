@@ -281,7 +281,7 @@ def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(database.g
 # Admin Course Management
 @router.post("/courses", response_model=schemas.Course)
 def create_course(course: schemas.CourseCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
-    db_course = models.Course(**course.dict(), status=models.CourseStatus.DRAFT, is_deleted=False)
+    db_course = models.Course(**course.dict(exclude={"discounted_price"}), status=models.CourseStatus.DRAFT, is_deleted=False)
     db.add(db_course)
     db.commit()
     db.refresh(db_course)
