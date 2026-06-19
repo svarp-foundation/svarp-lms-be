@@ -12,13 +12,13 @@ cd "$(dirname "$0")"
 echo "Pulling latest changes from origin dev..."
 git pull origin dev
 
-# # 2. Apply database migrations
-# if [ -f "./scripts/migrate.sh" ]; then
-#     echo "Running database migrations..."
-#     ./scripts/migrate.sh apply
-# else
-#     echo "Warning: migrate.sh not found, skipping database migrations."
-# fi
+# 2. Apply database migrations
+if [ -f "./scripts/migrate.sh" ]; then
+    echo "Running database migrations..."
+    ./scripts/migrate.sh apply
+else
+    echo "Warning: migrate.sh not found, skipping database migrations."
+fi
 
 # 3. Restart the backend systemd service
 echo "Restarting the backend service..."

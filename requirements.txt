@@ -10,3 +10,4 @@ requests
 qrcode
 reportlab
 pillow
+alembic
