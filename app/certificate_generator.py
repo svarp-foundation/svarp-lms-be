@@ -19,7 +19,7 @@ def generate_certificate_code() -> str:
     return f"SVARP-{date_str}-{short_uuid}"
 
 def generate_qr_code_bytes(cert_code: str, frontend_url: str = DEFAULT_FRONTEND_URL) -> bytes:
-    verify_url = f"{frontend_url}/verify/{cert_code}"
+    verify_url = f"{frontend_url}/global-academy/verify/{cert_code}"
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -71,7 +71,7 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     c.setFillAlpha(1.0) # Reset alpha
     
     # 4. QR Code (Top Right)
-    verify_url = f"{frontend_url}/verify/{cert_code}"
+    verify_url = f"{frontend_url}/global-academy/verify/{cert_code}"
     qr_bytes = generate_qr_code_bytes(cert_code, frontend_url)
     qr_image_reader = ImageReader(BytesIO(qr_bytes))
     
