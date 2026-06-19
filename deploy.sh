@@ -12,7 +12,20 @@ cd "$(dirname "$0")"
 echo "Pulling latest changes from origin dev..."
 git pull origin dev
 
-# 2. Apply database migrations
+# 2. Check and install python dependencies
+if [ -f "requirements.txt" ]; then
+    if [ -d "../venv" ]; then
+        echo "Checking and installing python packages..."
+        ../venv/bin/pip install -r requirements.txt
+    elif [ -d "venv" ]; then
+        echo "Checking and installing python packages..."
+        ./venv/bin/pip install -r requirements.txt
+    else
+        echo "Warning: virtual environment not found, skipping package installation."
+    fi
+fi
+
+# 3. Apply database migrations
 if [ -f "./scripts/migrate.sh" ]; then
     echo "Running database migrations..."
     ./scripts/migrate.sh apply
@@ -20,7 +33,7 @@ else
     echo "Warning: migrate.sh not found, skipping database migrations."
 fi
 
-# 3. Restart the backend systemd service
+# 4. Restart the backend systemd service
 echo "Restarting the backend service..."
 sudo systemctl restart svarp-lms-be
 
