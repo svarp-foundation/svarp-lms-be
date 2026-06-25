@@ -293,6 +293,7 @@ class CourseContent(BaseModel):
     require_final_assignment: bool = False
     final_assignment: Optional[AssignmentDetail] = None
     certificate_pdf_url: Optional[str] = None
+    certificate_code: Optional[str] = None
     profile_picture_url: Optional[str] = None
     verification_readiness: Optional[dict] = None
     class Config:

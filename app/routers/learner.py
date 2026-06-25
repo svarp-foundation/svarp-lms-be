@@ -426,6 +426,7 @@ def get_course_content(
         require_final_assignment=course.require_final_assignment,
         final_assignment=schemas.AssignmentDetail.model_validate(final_assignment, from_attributes=True) if final_assignment else None,
         certificate_pdf_url=cert.pdf_url if cert else None,
+        certificate_code=cert.certificate_code if cert else None,
         profile_picture_url=profile_picture_url,
         verification_readiness=verification_readiness
     )
