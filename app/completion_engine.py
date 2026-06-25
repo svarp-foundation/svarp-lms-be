@@ -95,6 +95,34 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
     # --- SUCCESS! TRIGGER CERTIFICATE ---
     
     user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        return None
+
+    # Check profile verification before generating certificate
+    import os
+    import requests
+    SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
+    SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+    SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
+    
+    try:
+        verify_response = requests.get(
+            f"{SVARP_VERIFY_URL}?email={user.email}",
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
+            timeout=5
+        )
+        if verify_response.status_code == 200:
+            verification_data = verify_response.json()
+            readiness = verification_data.get("payment_readiness") or {}
+            if not readiness.get("ready"):
+                print(f"[completion_engine] Profile not ready for certificate: {user.email}")
+                return None
+        else:
+            print(f"[completion_engine] Verification system returned status {verify_response.status_code} for {user.email}")
+            return None
+    except Exception as e:
+        print(f"[completion_engine] Verification system error: {e}")
+        return None
     
     from .certificate_generator import generate_certificate_code
     cert_code = generate_certificate_code()

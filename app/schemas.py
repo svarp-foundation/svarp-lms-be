@@ -294,6 +294,7 @@ class CourseContent(BaseModel):
     final_assignment: Optional[AssignmentDetail] = None
     certificate_pdf_url: Optional[str] = None
     profile_picture_url: Optional[str] = None
+    verification_readiness: Optional[dict] = None
     class Config:
         orm_mode = True
 

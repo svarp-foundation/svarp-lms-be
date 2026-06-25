@@ -390,6 +390,9 @@ def get_course_content(
     # Fetch dynamic progression
     prog = completion_engine.calculate_dynamic_progress(db, current_user.id, course_id)
 
+    # Trigger completion engine to check if a certificate should be generated
+    completion_engine.check_course_completion(db, current_user.id, course_id)
+
     # Fetch Certificate if it exists and is not revoked
     cert = db.query(models.Certificate).filter(
         models.Certificate.user_id == current_user.id,
@@ -399,11 +402,13 @@ def get_course_content(
 
     # Fetch profile picture from SVARP Admin API
     profile_picture_url = None
+    verification_readiness = None
     user_data = utils.fetch_user_membership(current_user.email)
     if user_data:
         profile_path = user_data.get("profile_picture_path")
         if profile_path:
             profile_picture_url = "/media/profile-picture"
+        verification_readiness = user_data.get("payment_readiness")
 
     # Fetch Final Assignment if required
     final_assignment = None
@@ -421,7 +426,8 @@ def get_course_content(
         require_final_assignment=course.require_final_assignment,
         final_assignment=schemas.AssignmentDetail.model_validate(final_assignment, from_attributes=True) if final_assignment else None,
         certificate_pdf_url=cert.pdf_url if cert else None,
-        profile_picture_url=profile_picture_url
+        profile_picture_url=profile_picture_url,
+        verification_readiness=verification_readiness
     )
 
 # ─── Wishlist Endpoints ─────────────────────────────────────────────────────
