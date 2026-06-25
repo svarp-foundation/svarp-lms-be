@@ -99,12 +99,24 @@ async def get_secure_media(
                     except Exception as e:
                         print(f"Error fetching profile picture for certificate: {e}")
 
+                    # Retrieve modules and lessons sorted by order
+                    modules_list = sorted(course.modules, key=lambda m: m.order)
+                    modules_data = []
+                    for m in modules_list:
+                        lessons_list = sorted(m.lessons, key=lambda l: l.order)
+                        lessons_data = [{"title": l.title, "type": l.lesson_type} for l in lessons_list]
+                        modules_data.append({
+                            "title": m.title,
+                            "lessons": lessons_data
+                        })
+
                     content_bytes = certificate_generator.generate_certificate_bytes(
                         student_name=student.full_name,
                         course_title=course.title,
                         cert_code=cert.certificate_code,
                         profile_picture_url=profile_picture_url,
-                        progress=progress
+                        progress=progress,
+                        modules=modules_data
                     )
                     media_type = "application/pdf"
                 else: # .png

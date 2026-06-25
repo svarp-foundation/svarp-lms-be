@@ -35,9 +35,10 @@ def generate_qr_code_bytes(cert_code: str, frontend_url: str = DEFAULT_FRONTEND_
     qr_buffer.seek(0)
     return qr_buffer.getvalue()
 
-def generate_certificate_bytes(student_name: str, course_title: str, cert_code: str, profile_picture_url: str = None, frontend_url: str = DEFAULT_FRONTEND_URL, progress: int = 100) -> bytes:
+def generate_certificate_bytes(student_name: str, course_title: str, cert_code: str, profile_picture_url: str = None, frontend_url: str = DEFAULT_FRONTEND_URL, progress: int = 100, modules: list = None) -> bytes:
     """
     Generates a premium DESIGNER PDF certificate dynamically, matching the frontend's layout perfectly.
+    Also appends a second page with the course syllabus if modules list is provided.
     """
     # Use landscape for a more traditional certificate feel
     page_size = landscape(letter)
@@ -45,6 +46,8 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     
     pdf_buffer = BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=page_size)
+    
+    # ─── PAGE 1: CERTIFICATE OF ACHIEVEMENT ──────────────────────────────────
     
     # 1. Background (Pure White as in Frontend container)
     c.setFillColor(colors.white)
@@ -66,7 +69,6 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     c.saveState()
     c.translate(width/2, height/2)
     c.rotate(12)
-    # Draw a larger seal-like shape for the watermark
     c.restoreState()
     c.setFillAlpha(1.0) # Reset alpha
     
@@ -106,17 +108,13 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     
     # 6c. Profile Image (Circular)
     try:
-        # User dynamic profile image URL if provided, else fallback
         profile_url = profile_picture_url or "https://i.pravatar.cc/150?u=svarp_default"
-        # Since this is a default, we can try to fetch it. 
-        # For simplicity and speed in a backend, we'll try it, but fall back gracefully.
         response = requests.get(profile_url, timeout=2)
         if response.status_code == 200:
             profile_reader = ImageReader(BytesIO(response.content))
         else:
             raise Exception("Failed to fetch image")
     except Exception:
-        # Fallback if network fails: Draw a grey circle with a person icon placeholder
         profile_reader = None
 
     img_y = height / 2.0 - 60
@@ -184,6 +182,84 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     c.drawCentredString(width - 150, 50, "AUTHORIZED SIGNATORY")
     
     c.showPage()
+    
+    # ─── PAGE 2: COURSE SYLLABUS & CURRICULUM ────────────────────────────────
+    if modules:
+        # 1. Background (Pure White)
+        c.setFillColor(colors.white)
+        c.rect(0, 0, width, height, fill=1, stroke=0)
+        
+        # 1b. Subtle border
+        c.setStrokeColor(colors.HexColor("#f3f4f6"))
+        c.setLineWidth(2)
+        c.rect(10, 10, width - 20, height - 20, fill=0, stroke=1)
+        
+        # 2. Top Accent Bar (Primary Green)
+        c.setFillColor(colors.HexColor("#9bcf9b")) 
+        c.rect(0, height - 12, width, 12, fill=1, stroke=0)
+        
+        # 3. Header Section
+        c.setFillColor(colors.HexColor("#1f3b45")) # ACCENT_COLOR
+        c.setFont("Helvetica-Bold", 22)
+        c.drawString(60, height - 60, "Official Course Curriculum Syllabus")
+        
+        c.setFont("Helvetica-Bold", 12)
+        c.setFillColor(colors.HexColor("#9bcf9b")) # Primary Green
+        c.drawString(60, height - 80, f"Course Title: {course_title}")
+        
+        c.setFillColor(colors.HexColor("#9ca3af"))
+        c.setFont("Helvetica", 9)
+        c.drawString(60, height - 95, f"Verified Certificate ID: {cert_code}  |  Completion Date: {current_date}")
+        
+        # Divider Line
+        c.setStrokeColor(colors.HexColor("#e5e7eb"))
+        c.setLineWidth(1)
+        c.line(60, height - 105, width - 60, height - 105)
+        
+        # Two-column layout computation
+        y_pos_col1 = height - 135
+        y_pos_col2 = height - 135
+        col_width = (width - 160) / 2
+        mid_point = (len(modules) + 1) // 2
+        
+        for idx, mod in enumerate(modules):
+            is_col_2 = idx >= mid_point
+            x_pos = 60 + col_width + 40 if is_col_2 else 60
+            y_pos = y_pos_col2 if is_col_2 else y_pos_col1
+            
+            # Module Header
+            c.setFillColor(colors.HexColor("#1f3b45"))
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(x_pos, y_pos, f"Module {idx+1}: {mod.get('title', 'Untitled Module')}")
+            y_pos -= 15
+            
+            # Lessons list
+            c.setFont("Helvetica", 9)
+            c.setFillColor(colors.HexColor("#4b5563"))
+            for l_idx, lesson in enumerate(mod.get("lessons", [])):
+                l_type = f" ({lesson['type'].upper()})" if lesson.get("type") else ""
+                lesson_text = f"  • Lesson {idx+1}.{l_idx+1}: {lesson.get('title', 'Untitled Lesson')}{l_type}"
+                
+                # Limit length of title to fit nicely inside the column
+                max_chars = int(col_width / 5.5)
+                if len(lesson_text) > max_chars:
+                    lesson_text = lesson_text[:max_chars-3] + "..."
+                    
+                c.drawString(x_pos, y_pos, lesson_text)
+                y_pos -= 13
+                
+                if y_pos < 50:
+                    break
+            
+            y_pos -= 12 # Space between modules
+            
+            if is_col_2:
+                y_pos_col2 = y_pos
+            else:
+                y_pos_col1 = y_pos
+        
+        c.showPage()
+        
     c.save()
     
     pdf_buffer.seek(0)
