@@ -265,8 +265,7 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
             c.setFont("Helvetica", 9)
             c.setFillColor(colors.HexColor("#4b5563"))
             for l_idx, lesson in enumerate(lessons):
-                l_type = f" ({lesson['type'].upper()})" if lesson.get("type") else ""
-                lesson_text = f"  • Lesson {idx+1}.{l_idx+1}: {lesson.get('title', 'Untitled Lesson')}{l_type}"
+                lesson_text = f"  • Lesson {idx+1}.{l_idx+1}: {lesson.get('title', 'Untitled Lesson')}"
                 
                 # Limit length of title to fit nicely inside the column
                 max_chars = int(col_width / 5.5)
