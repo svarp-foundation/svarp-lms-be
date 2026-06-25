@@ -35,10 +35,47 @@ def generate_qr_code_bytes(cert_code: str, frontend_url: str = DEFAULT_FRONTEND_
     qr_buffer.seek(0)
     return qr_buffer.getvalue()
 
+def draw_syllabus_page_template(c, width, height, course_title, cert_code, current_date, page_num):
+    # 1. Background (Pure White)
+    c.setFillColor(colors.white)
+    c.rect(0, 0, width, height, fill=1, stroke=0)
+    
+    # 1b. Subtle border
+    c.setStrokeColor(colors.HexColor("#f3f4f6"))
+    c.setLineWidth(2)
+    c.rect(10, 10, width - 20, height - 20, fill=0, stroke=1)
+    
+    # 2. Top Accent Bar (Primary Green)
+    c.setFillColor(colors.HexColor("#9bcf9b")) 
+    c.rect(0, height - 12, width, 12, fill=1, stroke=0)
+    
+    # 3. Header Section
+    c.setFillColor(colors.HexColor("#1f3b45")) # ACCENT_COLOR
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(60, height - 60, "Official Course Curriculum Syllabus")
+    
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(colors.HexColor("#9bcf9b")) # Primary Green
+    c.drawString(60, height - 80, f"Course Title: {course_title}")
+    
+    c.setFillColor(colors.HexColor("#9ca3af"))
+    c.setFont("Helvetica", 9)
+    c.drawString(60, height - 95, f"Verified Certificate ID: {cert_code}  |  Completion Date: {current_date}")
+    
+    # Page Number (Top Right)
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.HexColor("#1f3b45"))
+    c.drawRightString(width - 60, height - 60, f"Page {page_num}")
+    
+    # Divider Line
+    c.setStrokeColor(colors.HexColor("#e5e7eb"))
+    c.setLineWidth(1)
+    c.line(60, height - 105, width - 60, height - 105)
+
 def generate_certificate_bytes(student_name: str, course_title: str, cert_code: str, profile_picture_url: str = None, frontend_url: str = DEFAULT_FRONTEND_URL, progress: int = 100, modules: list = None) -> bytes:
     """
     Generates a premium DESIGNER PDF certificate dynamically, matching the frontend's layout perfectly.
-    Also appends a second page with the course syllabus if modules list is provided.
+    Also appends subsequent pages with the course syllabus if modules list is provided.
     """
     # Use landscape for a more traditional certificate feel
     page_size = landscape(letter)
@@ -183,60 +220,51 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     
     c.showPage()
     
-    # ─── PAGE 2: COURSE SYLLABUS & CURRICULUM ────────────────────────────────
+    # ─── PAGE 2+: COURSE SYLLABUS & CURRICULUM ────────────────────────────────
     if modules:
-        # 1. Background (Pure White)
-        c.setFillColor(colors.white)
-        c.rect(0, 0, width, height, fill=1, stroke=0)
+        page_num = 2
+        draw_syllabus_page_template(c, width, height, course_title, cert_code, current_date, page_num)
         
-        # 1b. Subtle border
-        c.setStrokeColor(colors.HexColor("#f3f4f6"))
-        c.setLineWidth(2)
-        c.rect(10, 10, width - 20, height - 20, fill=0, stroke=1)
-        
-        # 2. Top Accent Bar (Primary Green)
-        c.setFillColor(colors.HexColor("#9bcf9b")) 
-        c.rect(0, height - 12, width, 12, fill=1, stroke=0)
-        
-        # 3. Header Section
-        c.setFillColor(colors.HexColor("#1f3b45")) # ACCENT_COLOR
-        c.setFont("Helvetica-Bold", 22)
-        c.drawString(60, height - 60, "Official Course Curriculum Syllabus")
-        
-        c.setFont("Helvetica-Bold", 12)
-        c.setFillColor(colors.HexColor("#9bcf9b")) # Primary Green
-        c.drawString(60, height - 80, f"Course Title: {course_title}")
-        
-        c.setFillColor(colors.HexColor("#9ca3af"))
-        c.setFont("Helvetica", 9)
-        c.drawString(60, height - 95, f"Verified Certificate ID: {cert_code}  |  Completion Date: {current_date}")
-        
-        # Divider Line
-        c.setStrokeColor(colors.HexColor("#e5e7eb"))
-        c.setLineWidth(1)
-        c.line(60, height - 105, width - 60, height - 105)
-        
-        # Two-column layout computation
-        y_pos_col1 = height - 135
-        y_pos_col2 = height - 135
+        y_pos = height - 135
+        col = 1
         col_width = (width - 160) / 2
-        mid_point = (len(modules) + 1) // 2
         
         for idx, mod in enumerate(modules):
-            is_col_2 = idx >= mid_point
-            x_pos = 60 + col_width + 40 if is_col_2 else 60
-            y_pos = y_pos_col2 if is_col_2 else y_pos_col1
+            lessons = mod.get("lessons", [])
+            # Height needed: 15pt (header) + 13pt per lesson + 12pt space after module
+            height_needed = 15 + len(lessons) * 13 + 12
+            
+            # Check if this module fits in the current column
+            if y_pos - height_needed < 50:
+                if col == 1:
+                    col = 2
+                    y_pos = height - 135
+                else:
+                    c.showPage()
+                    page_num += 1
+                    draw_syllabus_page_template(c, width, height, course_title, cert_code, current_date, page_num)
+                    col = 1
+                    y_pos = height - 135
+            
+            x_pos = 60 + col_width + 40 if col == 2 else 60
             
             # Module Header
+            title = mod.get('title', 'Untitled Module')
+            import re
+            if re.match(r'^Module\s+\d+[:\s]', title, re.IGNORECASE):
+                module_header = title
+            else:
+                module_header = f"Module {idx+1}: {title}"
+                
             c.setFillColor(colors.HexColor("#1f3b45"))
             c.setFont("Helvetica-Bold", 11)
-            c.drawString(x_pos, y_pos, f"Module {idx+1}: {mod.get('title', 'Untitled Module')}")
+            c.drawString(x_pos, y_pos, module_header)
             y_pos -= 15
             
             # Lessons list
             c.setFont("Helvetica", 9)
             c.setFillColor(colors.HexColor("#4b5563"))
-            for l_idx, lesson in enumerate(mod.get("lessons", [])):
+            for l_idx, lesson in enumerate(lessons):
                 l_type = f" ({lesson['type'].upper()})" if lesson.get("type") else ""
                 lesson_text = f"  • Lesson {idx+1}.{l_idx+1}: {lesson.get('title', 'Untitled Lesson')}{l_type}"
                 
@@ -247,17 +275,9 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
                     
                 c.drawString(x_pos, y_pos, lesson_text)
                 y_pos -= 13
-                
-                if y_pos < 50:
-                    break
             
             y_pos -= 12 # Space between modules
             
-            if is_col_2:
-                y_pos_col2 = y_pos
-            else:
-                y_pos_col1 = y_pos
-        
         c.showPage()
         
     c.save()
