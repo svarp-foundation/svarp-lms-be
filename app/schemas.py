@@ -351,3 +351,13 @@ class WishlistItem(Course):
     """A wishlisted course, same fields as Course."""
     class Config:
         orm_mode = True
+
+class UserCertificate(BaseModel):
+    id: int
+    course_id: int
+    course_title: str
+    issued_at: datetime
+    certificate_code: str
+    pdf_url: Optional[str] = None
+    class Config:
+        orm_mode = True

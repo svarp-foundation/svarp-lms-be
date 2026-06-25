@@ -486,3 +486,27 @@ def remove_from_wishlist(
     db.delete(item)
     db.commit()
     return {"message": "Removed from wishlist"}
+
+@router.get("/certificates", response_model=List[schemas.UserCertificate])
+def get_user_certificates(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Return all generated certificates for the learner."""
+    certs = db.query(models.Certificate).join(models.Course).filter(
+        models.Certificate.user_id == current_user.id,
+        models.Certificate.revoked_at == None,
+        models.Course.is_deleted == False
+    ).all()
+    
+    result = []
+    for cert in certs:
+        result.append(schemas.UserCertificate(
+            id=cert.id,
+            course_id=cert.course_id,
+            course_title=cert.course.title,
+            issued_at=cert.issued_at,
+            certificate_code=cert.certificate_code,
+            pdf_url=cert.pdf_url
+        ))
+    return result
