@@ -403,7 +403,7 @@ def get_course_content(
     if user_data:
         profile_path = user_data.get("profile_picture_path")
         if profile_path:
-            profile_picture_url = f"{utils.SVARP_ADMIN_BASE_URL}{profile_path}"
+            profile_picture_url = "/media/profile-picture"
 
     # Fetch Final Assignment if required
     final_assignment = None

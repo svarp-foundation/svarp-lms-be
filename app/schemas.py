@@ -16,6 +16,7 @@ class User(UserBase):
     is_suspended: bool = False
     created_at: datetime
     membership: Optional[dict] = None
+    profile_picture_url: Optional[str] = None
     class Config:
         orm_mode = True
 

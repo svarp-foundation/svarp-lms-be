@@ -100,4 +100,5 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_d
 async def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     user_data = utils.fetch_user_membership(current_user.email)
     current_user.membership = user_data.get("membership") if user_data else None
+    current_user.profile_picture_url = "/media/profile-picture" if (user_data and user_data.get("profile_picture_path")) else None
     return current_user

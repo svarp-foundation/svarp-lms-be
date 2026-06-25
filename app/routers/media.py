@@ -15,6 +15,39 @@ SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
 SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
 SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
+@router.get("/profile-picture")
+async def get_profile_picture(
+    token: str = Query(..., description="JWT Bearer Token required for profile picture access"),
+    db: Session = Depends(database.get_db)
+):
+    """
+    Proxy route to fetch user profile picture from the main website backend safely.
+    """
+    try:
+        user = await auth.get_current_user(token=token, db=db)
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    try:
+        verify_response = requests.get(
+            f"{SVARP_VERIFY_URL}?email={user.email}",
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
+            timeout=5
+        )
+        if verify_response.status_code == 200:
+            user_data = verify_response.json()
+            profile_path = user_data.get("profile_picture_path")
+            if profile_path:
+                profile_url = f"{SVARP_ADMIN_BASE_URL}{profile_path}"
+                img_res = requests.get(profile_url, timeout=5)
+                if img_res.status_code == 200:
+                    media_type = img_res.headers.get("Content-Type", "image/png")
+                    return Response(content=img_res.content, media_type=media_type)
+    except Exception as e:
+        print(f"Error fetching profile picture via proxy: {e}")
+
+    raise HTTPException(status_code=404, detail="Profile picture not found")
+
 @router.get("/{filename}")
 async def get_secure_media(
     filename: str,
