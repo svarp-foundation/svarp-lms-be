@@ -362,3 +362,41 @@ class UserCertificate(BaseModel):
     pdf_url: Optional[str] = None
     class Config:
         orm_mode = True
+
+# ── Lesson Discussion/Comments Schemas ──────────────────────────────────────────
+
+class UserMini(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    role: str
+    class Config:
+        orm_mode = True
+
+class LessonCommentCreate(BaseModel):
+    content: str
+
+class LessonCommentOut(BaseModel):
+    id: int
+    lesson_id: int
+    user_id: int
+    content: str
+    created_at: datetime
+    user: UserMini
+
+    class Config:
+        orm_mode = True
+
+# ── Quiz Attempt History Schema ───────────────────────────────────────────────
+
+class AttemptOut(BaseModel):
+    submission_id: int
+    status: str
+    submitted_at: datetime
+    grade: Optional[int] = None
+    feedback: Optional[str] = None
+    mcq_score: Optional[int] = None
+    mcq_total: Optional[int] = None
+
+    class Config:
+        orm_mode = True

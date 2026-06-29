@@ -155,29 +155,24 @@ def submit_assignment(
             if not enrollment:
                 raise HTTPException(status_code=403, detail="Not enrolled in this course")
 
-    # Find or create submission
-    submission = db.query(models.Submission).filter(
+    # Check if user already has an APPROVED attempt
+    approved_submission = db.query(models.Submission).filter(
         models.Submission.assignment_id == assignment_id,
-        models.Submission.user_id == current_user.id
+        models.Submission.user_id == current_user.id,
+        models.Submission.status == models.SubmissionStatus.APPROVED
     ).first()
 
-    if submission:
-        if submission.status == models.SubmissionStatus.APPROVED:
-            raise HTTPException(status_code=400, detail="Assignment already approved")
-        # Clear old answers
-        db.query(models.AnswerSubmission).filter(
-            models.AnswerSubmission.submission_id == submission.id
-        ).delete()
-        submission.status = models.SubmissionStatus.SUBMITTED
-        submission.submitted_at = func.now()
-    else:
-        submission = models.Submission(
-            assignment_id=assignment_id,
-            user_id=current_user.id,
-            status=models.SubmissionStatus.SUBMITTED
-        )
-        db.add(submission)
-        db.flush()
+    if approved_submission:
+        raise HTTPException(status_code=400, detail="Assignment already approved")
+
+    # Always create a new submission for the attempt
+    submission = models.Submission(
+        assignment_id=assignment_id,
+        user_id=current_user.id,
+        status=models.SubmissionStatus.SUBMITTED
+    )
+    db.add(submission)
+    db.flush()
 
     # Map submission answers
     answers_map = {a.question_id: a for a in submit_data.answers}
@@ -229,20 +224,36 @@ def submit_assignment(
     submission.mcq_score = mcq_score
     submission.mcq_total = mcq_total
 
-    # Auto-approve if only MCQ questions
+    # Auto-approve/reject MCQ-only based on passing score
     if not has_subjective and mcq_total > 0:
-        submission.status = models.SubmissionStatus.APPROVED
-        # Mark lesson complete
-        if assignment.lesson_id:
-            existing = db.query(models.LessonCompletion).filter(
-                models.LessonCompletion.user_id == current_user.id,
-                models.LessonCompletion.lesson_id == assignment.lesson_id
-            ).first()
-            if not existing:
-                db.add(models.LessonCompletion(
-                    user_id=current_user.id,
-                    lesson_id=assignment.lesson_id
-                ))
+        course_id = assignment.course_id
+        if not course_id and assignment.lesson_id:
+            lesson = db.query(models.Lesson).filter(models.Lesson.id == assignment.lesson_id).first()
+            if lesson and lesson.module:
+                course_id = lesson.module.course_id
+        
+        passing_score = 70
+        if course_id:
+            course = db.query(models.Course).filter(models.Course.id == course_id).first()
+            if course and course.passing_score is not None:
+                passing_score = course.passing_score
+
+        score_percent = (mcq_score / mcq_total) * 100
+        if score_percent >= passing_score:
+            submission.status = models.SubmissionStatus.APPROVED
+            # Mark lesson complete
+            if assignment.lesson_id:
+                existing = db.query(models.LessonCompletion).filter(
+                    models.LessonCompletion.user_id == current_user.id,
+                    models.LessonCompletion.lesson_id == assignment.lesson_id
+                ).first()
+                if not existing:
+                    db.add(models.LessonCompletion(
+                        user_id=current_user.id,
+                        lesson_id=assignment.lesson_id
+                    ))
+        else:
+            submission.status = models.SubmissionStatus.REJECTED
 
     db.commit()
     db.refresh(submission)
@@ -271,7 +282,7 @@ def get_my_submission(
     submission = db.query(models.Submission).filter(
         models.Submission.assignment_id == assignment_id,
         models.Submission.user_id == current_user.id
-    ).first()
+    ).order_by(models.Submission.id.desc()).first()
     if not submission:
         raise HTTPException(status_code=404, detail="No submission found")
 
@@ -509,5 +520,110 @@ def get_user_certificates(
             issued_at=cert.issued_at,
             certificate_code=cert.certificate_code,
             pdf_url=cert.pdf_url
+        ))
+    return result
+
+# ── Lesson Discussion/Comments Endpoints ─────────────────────────────────────
+
+@router.post("/lessons/{lesson_id}/comments", response_model=schemas.LessonCommentOut)
+def post_lesson_comment(
+    lesson_id: int,
+    comment_data: schemas.LessonCommentCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Post a comment or question to a specific lesson."""
+    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+        
+    # Verify enrollment in the course that contains this lesson
+    course_id = lesson.module.course_id
+    enrollment = db.query(models.Enrollment).filter(
+        models.Enrollment.user_id == current_user.id,
+        models.Enrollment.course_id == course_id
+    ).first()
+    if not enrollment and current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Not enrolled in this course")
+
+    comment = models.LessonComment(
+        lesson_id=lesson_id,
+        user_id=current_user.id,
+        content=comment_data.content
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+@router.get("/lessons/{lesson_id}/comments", response_model=List[schemas.LessonCommentOut])
+def get_lesson_comments(
+    lesson_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Retrieve all comments/discussion for a specific lesson."""
+    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    # Verify enrollment or admin status
+    course_id = lesson.module.course_id
+    enrollment = db.query(models.Enrollment).filter(
+        models.Enrollment.user_id == current_user.id,
+        models.Enrollment.course_id == course_id
+    ).first()
+    if not enrollment and current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Not enrolled in this course")
+
+    comments = db.query(models.LessonComment).filter(
+        models.LessonComment.lesson_id == lesson_id
+    ).order_by(models.LessonComment.created_at.asc()).all()
+    return comments
+
+@router.delete("/lessons/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lesson_comment(
+    comment_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Delete a lesson comment if the user is the author or an admin."""
+    comment = db.query(models.LessonComment).filter(models.LessonComment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+        
+    if comment.user_id != current_user.id and current_user.role != models.UserRole.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this comment")
+
+    db.delete(comment)
+    db.commit()
+    return None
+
+@router.get("/assignments/{assignment_id}/attempts", response_model=List[schemas.AttemptOut])
+def get_assignment_attempts(
+    assignment_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Retrieve all submission attempts for a specific assignment by the current learner."""
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    submissions = db.query(models.Submission).filter(
+        models.Submission.assignment_id == assignment_id,
+        models.Submission.user_id == current_user.id
+    ).order_by(models.Submission.submitted_at.desc()).all()
+
+    result = []
+    for sub in submissions:
+        result.append(schemas.AttemptOut(
+            submission_id=sub.id,
+            status=sub.status,
+            submitted_at=sub.submitted_at,
+            grade=sub.grade,
+            feedback=sub.feedback,
+            mcq_score=sub.mcq_score,
+            mcq_total=sub.mcq_total
         ))
     return result

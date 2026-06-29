@@ -75,6 +75,10 @@ async def get_secure_media(
         cert_code = filename[:-4]
         cert = db.query(models.Certificate).filter(models.Certificate.certificate_code == cert_code).first()
         if cert:
+            # Security Check: Only allow the owner of the certificate OR an Admin to access
+            if user.role != models.UserRole.ADMIN.value and user.id != cert.user_id:
+                raise HTTPException(status_code=403, detail="Access denied to this certificate")
+                
             course = db.query(models.Course).filter(models.Course.id == cert.course_id).first()
             student = db.query(models.User).filter(models.User.id == cert.user_id).first()
             if course and student:
@@ -160,15 +164,52 @@ async def get_secure_media(
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
-    # In a fully strict system:
-    # 1. We would check if the User is ENROLLED in the course that contains this video
-    # 2. Or if the User is an Admin
-    
+    # Verify access to course media resources:
     if user.role != models.UserRole.ADMIN.value:
-        # Extra check: this is a learner. 
-        # A more complex system would map `filename` -> `lesson.video_url` -> `course` -> `enrollment`.
-        # For phase 4 MVP, ensuring they are a logged-in active user covers the primary gap.
-        pass
+        # 1. Check if the file is a course thumbnail (accessible to all authenticated users)
+        is_thumbnail = db.query(models.Course).filter(
+            models.Course.thumbnail_url.like(f"%{filename}"),
+            models.Course.is_deleted == False
+        ).first() is not None
+
+        # 2. Check if the file is a lesson video
+        lesson = db.query(models.Lesson).filter(
+            models.Lesson.video_url.like(f"%{filename}")
+        ).first()
+
+        # 3. Check if the file is a learner submission file
+        submission = db.query(models.Submission).filter(
+            models.Submission.file_url.like(f"%{filename}")
+        ).first()
+
+        if lesson:
+            # User must be enrolled in the course that contains this lesson video
+            course_id = db.query(models.Module.course_id).filter(
+                models.Module.id == lesson.module_id
+            ).scalar()
+            if course_id:
+                enrolled = db.query(models.Enrollment).filter(
+                    models.Enrollment.user_id == user.id,
+                    models.Enrollment.course_id == course_id
+                ).first() is not None
+                if not enrolled:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Access denied. You must be enrolled in this course to access this media."
+                    )
+        elif submission:
+            # Only the submitting student (or admin) can view this file
+            if submission.user_id != user.id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied. You cannot view another learner's submission."
+                )
+        elif not is_thumbnail:
+            # Not a thumbnail, video, or submission: access forbidden
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied."
+            )
 
     media_type, _ = mimetypes.guess_type(file_path)
     if not media_type:

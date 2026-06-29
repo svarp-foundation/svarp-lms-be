@@ -83,6 +83,7 @@ class Lesson(Base):
     module = relationship("Module", back_populates="lessons")
     assignment = relationship("Assignment", uselist=False, back_populates="lesson", cascade="all, delete-orphan")
     completions = relationship("LessonCompletion", back_populates="lesson", cascade="all, delete-orphan")
+    comments = relationship("LessonComment", back_populates="lesson", cascade="all, delete-orphan")
 
 class LessonCompletion(Base):
     __tablename__ = "lesson_completions"
@@ -248,3 +249,15 @@ class Wishlist(Base):
 
     user = relationship("User", back_populates="wishlists")
     course = relationship("Course")
+
+class LessonComment(Base):
+    __tablename__ = "lesson_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    lesson = relationship("Lesson", back_populates="comments")
+    user = relationship("User")
