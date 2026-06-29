@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 import os
@@ -51,6 +51,7 @@ async def get_profile_picture(
 @router.get("/{filename}")
 async def get_secure_media(
     filename: str,
+    request: Request,
     token: str = Query(..., description="JWT Bearer Token required for media access"),
     download: bool = Query(False, description="Set to true to trigger file download"),
     db: Session = Depends(database.get_db)
@@ -79,6 +80,16 @@ async def get_secure_media(
             if course and student:
                 from .. import certificate_generator
                 
+                # Dynamically determine frontend_url
+                frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+                if "localhost" in frontend_url or "127.0.0.1" in frontend_url:
+                    req_host = request.base_url.hostname
+                    if req_host and req_host not in ("localhost", "127.0.0.1"):
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(frontend_url)
+                        port_str = f":{parsed_url.port}" if parsed_url.port else ""
+                        frontend_url = f"{parsed_url.scheme}://{req_host}{port_str}{parsed_url.path}".rstrip("/")
+
                 if filename.endswith(".pdf"):
                     from .. import completion_engine
                     progress = completion_engine.calculate_dynamic_progress(db, student.id, course.id)
@@ -115,12 +126,16 @@ async def get_secure_media(
                         course_title=course.title,
                         cert_code=cert.certificate_code,
                         profile_picture_url=profile_picture_url,
+                        frontend_url=frontend_url,
                         progress=progress,
                         modules=modules_data
                     )
                     media_type = "application/pdf"
                 else: # .png
-                    content_bytes = certificate_generator.generate_qr_code_bytes(cert_code=cert.certificate_code)
+                    content_bytes = certificate_generator.generate_qr_code_bytes(
+                        cert_code=cert.certificate_code,
+                        frontend_url=frontend_url
+                    )
                     media_type = "image/png"
                     
                 disposition = "attachment" if download else "inline"

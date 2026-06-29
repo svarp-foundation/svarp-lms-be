@@ -9,6 +9,11 @@ from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.units import inch, cm
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
+from dotenv import load_dotenv
+
+# Load .env from the root of the backend folder
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 DEFAULT_FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
