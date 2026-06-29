@@ -370,6 +370,7 @@ class UserMini(BaseModel):
     full_name: str
     email: str
     role: str
+    profile_picture_url: Optional[str] = None
     class Config:
         orm_mode = True
 

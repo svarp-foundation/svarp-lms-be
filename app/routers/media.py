@@ -17,6 +17,7 @@ SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
 @router.get("/profile-picture")
 async def get_profile_picture(
+    email: str = Query(None, description="Email of the user whose profile picture to fetch"),
     token: str = Query(..., description="JWT Bearer Token required for profile picture access"),
     db: Session = Depends(database.get_db)
 ):
@@ -28,9 +29,11 @@ async def get_profile_picture(
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid token")
 
+    target_email = email if email else user.email
+
     try:
         verify_response = requests.get(
-            f"{SVARP_VERIFY_URL}?email={user.email}",
+            f"{SVARP_VERIFY_URL}?email={target_email}",
             headers={"X-API-Key": SVARP_ADMIN_API_KEY},
             timeout=5
         )
@@ -44,7 +47,7 @@ async def get_profile_picture(
                     media_type = img_res.headers.get("Content-Type", "image/png")
                     return Response(content=img_res.content, media_type=media_type)
     except Exception as e:
-        print(f"Error fetching profile picture via proxy: {e}")
+        print(f"Error fetching profile picture via proxy for {target_email}: {e}")
 
     raise HTTPException(status_code=404, detail="Profile picture not found")
 

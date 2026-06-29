@@ -554,6 +554,10 @@ def post_lesson_comment(
     db.add(comment)
     db.commit()
     db.refresh(comment)
+    
+    if comment.user:
+        comment.user.profile_picture_url = f"/media/profile-picture?email={comment.user.email}"
+        
     return comment
 
 @router.get("/lessons/{lesson_id}/comments", response_model=List[schemas.LessonCommentOut])
@@ -579,6 +583,11 @@ def get_lesson_comments(
     comments = db.query(models.LessonComment).filter(
         models.LessonComment.lesson_id == lesson_id
     ).order_by(models.LessonComment.created_at.asc()).all()
+    
+    for comment in comments:
+        if comment.user:
+            comment.user.profile_picture_url = f"/media/profile-picture?email={comment.user.email}"
+            
     return comments
 
 @router.delete("/lessons/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
