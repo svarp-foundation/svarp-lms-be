@@ -62,11 +62,26 @@ async def register_user(user: schemas.UserCreate):
             created_at=datetime.utcnow(),
         )
     except ServiceError as se:
+        if se.status_code in [400, 500]:
+            try:
+                existing_user = await user_portal_client.get_user(email=user.email)
+                if existing_user and existing_user.get("user_id"):
+                    roles = existing_user.get("roles", [])
+                    primary_role = "admin" if "admin" in roles else "learner"
+                    return schemas.User(
+                        id=str(existing_user.get("user_id")),
+                        email=existing_user.get("email"),
+                        full_name=existing_user.get("full_name") or full_name,
+                        role=primary_role,
+                        is_suspended=False,
+                        created_at=datetime.utcnow(),
+                    )
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail="This email is already registered. Please log in.")
         raise HTTPException(status_code=se.status_code, detail=se.detail)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Registration error: {type(e).__name__}: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Registration could not be completed. Please try logging in or use another email.")
 
 
 @router.get("/users/me", response_model=schemas.User)
