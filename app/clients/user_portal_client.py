@@ -30,7 +30,10 @@ class ServiceError(Exception):
 class UserPortalClient:
     @property
     def base_url(self) -> str:
-        return os.getenv("USER_PORTAL_URL", "http://localhost:8000").rstrip("/")
+        url = os.getenv("USER_PORTAL_URL", "http://localhost:8000").rstrip("/")
+        if url.endswith("/api/v1"):
+            url = url[:-7].rstrip("/")
+        return url
 
     @property
     def api_key(self) -> str:
