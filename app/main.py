@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from datetime import timedelta
 import os
 
-from . import models, schemas, auth, database, create_admin
+from . import models, schemas, auth, database
 from .routers import admin, public, learner, media, auth as auth_router, course_payments
 
 models.Base.metadata.create_all(bind=database.engine)
@@ -17,13 +17,6 @@ app = FastAPI(title="SVARP GLOBAL ACADEMY API")
 if not os.path.exists("static/uploads"):
     os.makedirs("static/uploads")
 
-# Security Fix: We removed the global static mount to protect premium paid media.
-# Media is served via the authenticated /media/ router.
-# app.mount("/static", StaticFiles(directory="backend/static"), name="static")
-
-@app.on_event("startup")
-def startup_event():
-    create_admin.create_admin_auto()
 
 # CORS Setup
 origins = [
