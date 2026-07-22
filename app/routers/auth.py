@@ -62,22 +62,24 @@ async def register_user(user: schemas.UserCreate):
             created_at=datetime.utcnow(),
         )
     except ServiceError as se:
-        if se.status_code in [400, 500]:
-            try:
-                existing_user = await user_portal_client.get_user(email=user.email)
-                if existing_user and existing_user.get("user_id"):
-                    roles = existing_user.get("roles", [])
-                    primary_role = "admin" if "admin" in roles else "learner"
-                    return schemas.User(
-                        id=str(existing_user.get("user_id")),
-                        email=existing_user.get("email"),
-                        full_name=existing_user.get("full_name") or full_name,
-                        role=primary_role,
-                        is_suspended=False,
-                        created_at=datetime.utcnow(),
-                    )
-            except Exception:
-                pass
+        # Check if the user already exists on the portal (e.g., duplicate registration attempt)
+        try:
+            existing_user = await user_portal_client.get_user(email=user.email)
+            if existing_user and existing_user.get("user_id"):
+                roles = existing_user.get("roles", [])
+                primary_role = "admin" if "admin" in roles else "learner"
+                return schemas.User(
+                    id=str(existing_user.get("user_id")),
+                    email=existing_user.get("email"),
+                    full_name=existing_user.get("full_name") or full_name,
+                    role=primary_role,
+                    is_suspended=False,
+                    created_at=datetime.utcnow(),
+                )
+        except Exception:
+            pass
+
+        if se.status_code == 400:
             raise HTTPException(status_code=400, detail="This email is already registered. Please log in.")
         raise HTTPException(status_code=se.status_code, detail=se.detail)
     except Exception:
