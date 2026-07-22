@@ -84,20 +84,9 @@ def create_admin_interactive():
 def create_admin_auto():
     """Auto-creation for system startup (non-interactive)."""
     email = os.getenv("SUPER_USER_EMAIL")
-    password = os.getenv("SUPER_USER_PASSWORD")
-    full_name = os.getenv("SUPER_USER_FULL_NAME", "Super Admin")
+    if email:
+        logger.info(f"Central Admin User configured for LMS: {email} (Managed by Central User Portal)")
 
-    if not email or not password:
-        logger.warning("SUPER_USER_EMAIL or SUPER_USER_PASSWORD not set in .env. Skipping auto-admin creation.")
-        return
-
-    # Ensure tables exist
-    models.Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    try:
-        create_super_user(db, email, password, full_name)
-    finally:
-        db.close()
 
 if __name__ == "__main__":
     create_admin_interactive()

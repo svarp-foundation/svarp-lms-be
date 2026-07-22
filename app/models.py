@@ -11,7 +11,7 @@ class UserRole(str, enum.Enum):
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     full_name = Column(String)
@@ -89,7 +89,7 @@ class LessonCompletion(Base):
     __tablename__ = "lesson_completions"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"))
     lesson_id = Column(Integer, ForeignKey("lessons.id"))
     completed_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -150,7 +150,7 @@ class Submission(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     assignment_id = Column(Integer, ForeignKey("assignments.id"))
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"))
     content = Column(Text, nullable=True)
     file_url = Column(String, nullable=True)
     status = Column(String, default=SubmissionStatus.SUBMITTED)
@@ -182,7 +182,7 @@ class Enrollment(Base):
     __tablename__ = "enrollments"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"))
     course_id = Column(Integer, ForeignKey("courses.id"))
     enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -198,7 +198,7 @@ class CoursePayment(Base):
     __tablename__ = "course_payments"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"))
     course_id = Column(Integer, ForeignKey("courses.id"))
     payment_id = Column(String, nullable=True)  # Razorpay order ID
     amount = Column(Float)
@@ -213,7 +213,7 @@ class Certificate(Base):
     __tablename__ = "certificates"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"))
     course_id = Column(Integer, ForeignKey("courses.id"))
     issued_at = Column(DateTime(timezone=True), server_default=func.now())
     certificate_code = Column(String, unique=True, index=True) # For QR verification
@@ -222,7 +222,7 @@ class Certificate(Base):
     # New fields for validity and audit
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     revoked_reason = Column(String, nullable=True)
-    issued_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    issued_by = Column(String, ForeignKey("users.id"), nullable=True)
     verification_url = Column(String, nullable=True)
 
     user = relationship("User", back_populates="certificates", foreign_keys=[user_id])
@@ -232,7 +232,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    admin_id = Column(Integer, ForeignKey("users.id"))
+    admin_id = Column(String, ForeignKey("users.id"))
     action_type = Column(String, index=True)
     target_entity = Column(String)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
@@ -243,7 +243,7 @@ class Wishlist(Base):
     __tablename__ = "wishlists"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"))
     course_id = Column(Integer, ForeignKey("courses.id"))
     added_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -255,7 +255,7 @@ class LessonComment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

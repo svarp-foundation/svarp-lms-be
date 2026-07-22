@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime
 from .models import UserRole, CourseStatus, LessonType, SubmissionStatus, QuestionType
 
@@ -11,13 +11,14 @@ class UserCreate(UserBase):
     password: str
 
 class User(UserBase):
-    id: int
+    id: Union[int, str]
     role: str
     is_suspended: bool = False
     created_at: datetime
     membership: Optional[dict] = None
     profile_picture_url: Optional[str] = None
     class Config:
+        from_attributes = True
         orm_mode = True
 
 class Token(BaseModel):
