@@ -17,14 +17,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def create_super_user(db, email, password, full_name):
-    """Core logic to create or update a super user."""
-    hashed_password = auth.get_password_hash(password)
+    """Core logic to create or update a super user via central portal & local sync."""
+    from app.clients.user_portal_client import user_portal_client
+    import asyncio
+    
+    user_id = None
+    try:
+        portal_user = asyncio.run(user_portal_client.create_user(
+            email=email,
+            password=password,
+            full_name=full_name
+        ))
+        user_id = str(portal_user.get("user_id"))
+    except Exception as e:
+        logger.info(f"Portal creation notice for {email}: {e}")
+        try:
+            portal_user = asyncio.run(user_portal_client.get_user(email=email))
+            if portal_user and portal_user.get("user_id"):
+                user_id = str(portal_user.get("user_id"))
+        except Exception:
+            pass
+
     existing_user = db.query(models.User).filter(models.User.email == email).first()
     
     if existing_user:
         logger.info(f"User with email {email} already exists. Updating details...")
+        if user_id:
+            existing_user.id = user_id
         existing_user.full_name = full_name
-        existing_user.hashed_password = hashed_password
         existing_user.role = models.UserRole.ADMIN
         db.commit()
         logger.info(f"Success! Admin user {email} updated.")
@@ -32,10 +52,13 @@ def create_super_user(db, email, password, full_name):
 
     try:
         new_admin = models.User(
+            id=user_id or email,
             email=email,
             full_name=full_name,
-            hashed_password=hashed_password,
-            role=models.UserRole.ADMIN
+            role=models.UserRole.ADMIN,
+            is_active=True,
+            is_suspended=False,
+            hashed_password=""
         )
         db.add(new_admin)
         db.commit()
@@ -43,6 +66,7 @@ def create_super_user(db, email, password, full_name):
     except Exception as e:
         logger.error(f"Error creating admin: {e}")
         db.rollback()
+
 
 def create_admin_interactive():
     """Interactive CLI version."""

@@ -6,12 +6,14 @@ import os
 import uuid
 import csv
 import io
+from app.clients.user_portal_client import user_portal_client, ServiceError
 from .. import models, schemas, database, auth, completion_engine
 
 router = APIRouter(
     prefix="/admin",
     tags=["admin"],
 )
+
 
 @router.get("/stats")
 def get_admin_stats(
@@ -245,7 +247,6 @@ async def bulk_create_users(
     errors = []
     
     for row in csv_reader:
-        # Expected request format: email, full_name, password
         email = row.get('email')
         full_name = row.get('full_name')
         password = row.get('password')
@@ -254,24 +255,44 @@ async def bulk_create_users(
             errors.append(f"Row missing email or password: {row}")
             continue
             
-        # Check if user exists
-        db_user = db.query(models.User).filter(models.User.email == email).first()
-        if db_user:
-            errors.append(f"User already exists: {email}")
-            continue
+        try:
+            portal_user = await user_portal_client.create_user(
+                email=email,
+                password=password,
+                full_name=full_name or email.split('@')[0].title()
+            )
+            user_id = str(portal_user.get("user_id"))
             
-        hashed_password = auth.get_password_hash(password)
-        new_user = models.User(
-            email=email,
-            full_name=full_name or "",
-            hashed_password=hashed_password,
-            role=models.UserRole.LEARNER # Default to learner for bulk add
-        )
-        db.add(new_user)
-        created_count += 1
-        
+            db_user = db.query(models.User).filter(models.User.id == user_id).first()
+            if not db_user:
+                db_user = db.query(models.User).filter(models.User.email == email).first()
+            
+            if db_user:
+                db_user.id = user_id
+                db_user.email = email
+                db_user.full_name = full_name or db_user.full_name
+                db_user.role = models.UserRole.LEARNER
+                db_user.is_active = True
+            else:
+                db_user = models.User(
+                    id=user_id,
+                    email=email,
+                    full_name=full_name or email.split('@')[0].title(),
+                    role=models.UserRole.LEARNER,
+                    is_active=True,
+                    is_suspended=False,
+                    hashed_password=""
+                )
+                db.add(db_user)
+            created_count += 1
+        except ServiceError as se:
+            errors.append(f"Portal error for {email}: {se.detail}")
+        except Exception as e:
+            errors.append(f"Failed to process {email}: {str(e)}")
+            
     db.commit()
-    return {"message": f"Successfully created {created_count} users", "errors": errors}
+    return {"message": f"Successfully processed {created_count} users", "errors": errors}
+
 
 @router.get("/users", response_model=List[schemas.User])
 def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
@@ -529,12 +550,20 @@ def delete_course(
     return None
 
 @router.post("/users/{user_id}/suspend", status_code=status.HTTP_200_OK)
-def suspend_user(user_id: int, suspend: bool = True, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+async def suspend_user(user_id: str, suspend: bool = True, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
+    user = db.query(models.User).filter(models.User.id == str(user_id)).first()
+    if not user:
+        user = db.query(models.User).filter(models.User.email == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    try:
+        await user_portal_client.update_user(user.id, {"is_active": not suspend})
+    except Exception as e:
+        print(f"Warning: Failed to update user_portal status: {e}")
+        
     user.is_suspended = suspend
+    user.is_active = not suspend
     
     action = "suspend_user" if suspend else "unsuspend_user"
     log = models.AuditLog(admin_id=current_user.id, action_type=action, target_entity=f"User {user_id}")
@@ -673,7 +702,7 @@ def review_submission(
     db.commit()
     return {"message": "Submission reviewed successfully"}
 
-def process_bulk_enrollment(course_id: int, file_content: bytes):
+async def process_bulk_enrollment(course_id: int, file_content: bytes):
     db: Session = database.SessionLocal()
     try:
         decoded_content = file_content.decode('utf-8')
@@ -684,18 +713,38 @@ def process_bulk_enrollment(course_id: int, file_content: bytes):
             if not email:
                 continue
                 
-            # Check/Create User
             user = db.query(models.User).filter(models.User.email == email).first()
             if not user:
-                # Create user with dummy password
-                # In real app, might send invite email
-                pwd = auth.get_password_hash("changeme123")
-                user = models.User(email=email, full_name=email.split('@')[0], hashed_password=pwd, role=models.UserRole.LEARNER)
+                try:
+                    portal_user = await user_portal_client.get_user(email=email)
+                except Exception:
+                    portal_user = None
+                
+                if not portal_user:
+                    try:
+                        portal_user = await user_portal_client.create_user(
+                            email=email,
+                            password="Changeme@123",
+                            full_name=email.split('@')[0].title()
+                        )
+                    except Exception as e:
+                        print(f"Bulk enrollment portal creation error for {email}: {e}")
+                        continue
+                
+                user_id = str(portal_user.get("user_id"))
+                user = models.User(
+                    id=user_id,
+                    email=email,
+                    full_name=portal_user.get("full_name") or email.split('@')[0].title(),
+                    role=models.UserRole.LEARNER,
+                    is_active=True,
+                    is_suspended=False,
+                    hashed_password=""
+                )
                 db.add(user)
                 db.commit()
                 db.refresh(user)
                 
-            # Check if enrollment exists
             enrollment = db.query(models.Enrollment).filter(
                 models.Enrollment.user_id == user.id,
                 models.Enrollment.course_id == course_id
@@ -710,6 +759,7 @@ def process_bulk_enrollment(course_id: int, file_content: bytes):
         print(f"Bulk enrollment failed: {e}")
     finally:
         db.close()
+
 
 @router.post("/courses/{course_id}/enroll/bulk", status_code=status.HTTP_202_ACCEPTED)
 async def bulk_enroll_users(

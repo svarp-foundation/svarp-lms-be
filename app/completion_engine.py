@@ -94,9 +94,12 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
 
     # --- SUCCESS! TRIGGER CERTIFICATE ---
     
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    user = db.query(models.User).filter(models.User.id == str(user_id)).first()
+    if not user:
+        user = db.query(models.User).filter(models.User.email == str(user_id)).first()
     if not user:
         return None
+
 
     # Check profile verification before generating certificate
     import os
