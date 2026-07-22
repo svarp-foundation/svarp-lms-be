@@ -5,7 +5,7 @@ from .models import UserRole, CourseStatus, LessonType, SubmissionStatus, Questi
 
 class UserBase(BaseModel):
     email: str
-    full_name: str
+    full_name: Optional[str] = None
 
 class UserCreate(UserBase):
     password: str
@@ -14,7 +14,7 @@ class User(UserBase):
     id: Union[int, str]
     role: str
     is_suspended: bool = False
-    created_at: datetime
+    created_at: Optional[datetime] = None
     membership: Optional[dict] = None
     profile_picture_url: Optional[str] = None
     class Config:

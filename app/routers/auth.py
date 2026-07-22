@@ -44,10 +44,11 @@ async def refresh_access_token(token_data: schemas.TokenRefresh):
 @router.post("/register", response_model=schemas.User)
 async def register_user(user: schemas.UserCreate):
     try:
+        full_name = user.full_name or user.email.split("@")[0].title()
         portal_user = await user_portal_client.create_user(
             email=user.email,
             password=user.password,
-            full_name=user.full_name,
+            full_name=full_name,
         )
         roles = portal_user.get("roles", [])
         primary_role = "admin" if "admin" in roles else "learner"
@@ -55,13 +56,17 @@ async def register_user(user: schemas.UserCreate):
         return schemas.User(
             id=str(portal_user.get("user_id")),
             email=portal_user.get("email"),
-            full_name=portal_user.get("full_name"),
+            full_name=portal_user.get("full_name") or full_name,
             role=primary_role,
             is_suspended=False,
             created_at=datetime.utcnow(),
         )
     except ServiceError as se:
         raise HTTPException(status_code=se.status_code, detail=se.detail)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Registration error: {type(e).__name__}: {str(e)}")
 
 
 @router.get("/users/me", response_model=schemas.User)
