@@ -295,9 +295,54 @@ async def bulk_create_users(
 
 
 @router.get("/users", response_model=List[schemas.User])
-def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
-    users = db.query(models.User).offset(skip).limit(limit).all()
-    return users
+async def read_users(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    try:
+        portal_users = await user_portal_client.list_users(skip=skip, limit=limit)
+    except Exception:
+        portal_users = []
+
+    result = []
+    for pu in portal_users:
+        user_id = str(pu.get("user_id"))
+        email = pu.get("email")
+        full_name = pu.get("full_name") or (email.split("@")[0].title() if email else "")
+        roles = pu.get("roles", [])
+        primary_role = "admin" if "admin" in roles else "learner"
+
+        db_user = db.query(models.User).filter(models.User.id == user_id).first()
+        if not db_user and email:
+            db_user = db.query(models.User).filter(models.User.email == email).first()
+
+        if db_user:
+            db_user.id = user_id
+            db_user.email = email
+            db_user.full_name = full_name
+            db_user.role = primary_role
+            db_user.is_active = True
+            db.commit()
+            db.refresh(db_user)
+        else:
+            db_user = models.User(
+                id=user_id,
+                email=email,
+                full_name=full_name,
+                role=primary_role,
+                is_active=True,
+                is_suspended=False,
+                hashed_password=""
+            )
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+
+        result.append(db_user)
+
+    return result
 
 # Admin Course Management
 @router.post("/courses", response_model=schemas.Course)

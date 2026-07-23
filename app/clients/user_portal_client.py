@@ -148,5 +148,12 @@ class UserPortalClient:
             params={"user_id": user_id},
         )
 
+    async def list_users(self, skip: int = 0, limit: int = 100, search: Optional[str] = None) -> list:
+        """List all users from central portal."""
+        params = {"skip": skip, "limit": limit}
+        if search:
+            params["search"] = search
+        return await self._request("GET", "/api/v1/external/list-users", params=params)
+
 
 user_portal_client = UserPortalClient()
