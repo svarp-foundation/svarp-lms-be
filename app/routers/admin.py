@@ -522,6 +522,121 @@ async def bulk_create_course(
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Failed to parse or create course: {str(e)}")
 
+@router.post("/courses/{course_id}/update-from-file", status_code=status.HTTP_200_OK)
+async def update_course_from_file(
+    course_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    if not file.filename.endswith('.txt'):
+        raise HTTPException(status_code=400, detail="File must be a .txt file")
+    
+    db_course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
+    if not db_course:
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
+        
+    content = await file.read()
+    decoded_content = content.decode('utf-8')
+    
+    try:
+        course_data, modules = parse_course_file(decoded_content)
+        
+        if not course_data:
+            raise HTTPException(status_code=400, detail="Course data missing in file")
+            
+        # Update Course Metadata
+        if 'title' in course_data:
+            db_course.title = course_data['title']
+        if 'description' in course_data:
+            db_course.description = course_data['description']
+        if 'price' in course_data:
+            db_course.price = float(course_data['price'])
+        if 'is_paid' in course_data:
+            db_course.is_paid = course_data['is_paid'].lower() == 'true'
+
+        # Delete existing modules, lessons, assignments, and questions for this course
+        existing_modules = db.query(models.Module).filter(models.Module.course_id == course_id).all()
+        for m in existing_modules:
+            lessons = db.query(models.Lesson).filter(models.Lesson.module_id == m.id).all()
+            for l in lessons:
+                assignments = db.query(models.Assignment).filter(models.Assignment.lesson_id == l.id).all()
+                for a in assignments:
+                    questions = db.query(models.Question).filter(models.Question.assignment_id == a.id).all()
+                    for q in questions:
+                        db.query(models.QuestionOption).filter(models.QuestionOption.question_id == q.id).delete(synchronize_session=False)
+                        db.delete(q)
+                    db.delete(a)
+                db.delete(l)
+            db.delete(m)
+        db.flush()
+
+        # Re-create Modules and Lessons from file
+        for m_idx, m_data in enumerate(modules):
+            db_module = models.Module(
+                course_id=db_course.id,
+                title=m_data.get('title', f"Module {m_idx + 1}"),
+                description=m_data.get('description', ''),
+                order=m_idx + 1
+            )
+            db.add(db_module)
+            db.flush()
+            
+            for l_idx, l_data in enumerate(m_data.get('lessons', [])):
+                db_lesson = models.Lesson(
+                    module_id=db_module.id,
+                    title=l_data.get('title', f"Lesson {l_idx + 1}"),
+                    content=l_data.get('content', ''),
+                    video_url=l_data.get('video_url', None),
+                    lesson_type=l_data.get('type', 'text').lower(),
+                    order=l_idx + 1
+                )
+                db.add(db_lesson)
+                db.flush()
+
+                if l_data.get('type', '').lower() == 'assignment' and 'assignment_data' in l_data:
+                    a_data = l_data['assignment_data']
+                    db_assignment = models.Assignment(
+                        course_id=db_course.id,
+                        lesson_id=db_lesson.id,
+                        title=a_data.get('title', l_data.get('title', 'Assignment')),
+                        description=a_data.get('description', 'Assignment description')
+                    )
+                    db.add(db_assignment)
+                    db.flush()
+
+                    for q_idx, q_data in enumerate(a_data.get('questions', [])):
+                        db_question = models.Question(
+                            assignment_id=db_assignment.id,
+                            question_text=q_data.get('text', q_data.get('question_text', '')),
+                            question_type=q_data.get('type', 'subjective').lower(),
+                            order=int(q_data.get('order', q_idx + 1))
+                        )
+                        db.add(db_question)
+                        db.flush()
+
+                        if db_question.question_type == 'mcq':
+                            for opt in q_data.get('options', []):
+                                db_option = models.QuestionOption(
+                                    question_id=db_question.id,
+                                    option_text=opt['text'],
+                                    is_correct=opt['is_correct']
+                                )
+                                db.add(db_option)
+
+        db.commit()
+        db.refresh(db_course)
+
+        # Audit Log
+        log = models.AuditLog(admin_id=current_user.id, action_type="update_course_from_file", target_entity=f"Course {db_course.id}")
+        db.add(log)
+        db.commit()
+
+        return {"message": f"Course '{db_course.title}' updated successfully from file", "course_id": db_course.id, "title": db_course.title}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to parse or update course: {str(e)}")
+
 @router.put("/courses/{course_id}", response_model=schemas.Course)
 def update_course(course_id: int, course_update: schemas.CourseUpdate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
     
