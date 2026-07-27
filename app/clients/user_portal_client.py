@@ -155,5 +155,14 @@ class UserPortalClient:
             params["search"] = search
         return await self._request("GET", "/api/v1/external/list-users", params=params)
 
+    async def delete_user(self, user_id: str) -> dict:
+        """Soft delete user on central portal."""
+        return await self._request(
+            "DELETE",
+            "/api/v1/external/delete-user",
+            params={"user_id": user_id},
+        )
+
 
 user_portal_client = UserPortalClient()
+

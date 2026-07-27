@@ -17,10 +17,30 @@ router = APIRouter(
 
 
 @router.get("/stats")
-def get_admin_stats(
+async def get_admin_stats(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_admin)
 ):
+    try:
+        portal_users = await user_portal_client.list_users(limit=500)
+        active_portal_ids = {str(pu.get("user_id")) for pu in portal_users}
+        
+        # Prune any local orphaned LMS users soft-deleted on central portal
+        orphans = db.query(models.User).filter(
+            models.User.role == "learner",
+            ~models.User.id.in_(active_portal_ids)
+        ).all()
+        for orphan in orphans:
+            db.query(models.Enrollment).filter(models.Enrollment.user_id == orphan.id).delete()
+            db.query(models.LessonCompletion).filter(models.LessonCompletion.user_id == orphan.id).delete()
+            db.query(models.Wishlist).filter(models.Wishlist.user_id == orphan.id).delete()
+            db.query(models.LessonComment).filter(models.LessonComment.user_id == orphan.id).delete()
+            db.delete(orphan)
+        if orphans:
+            db.commit()
+    except Exception:
+        pass
+
     total_users = db.query(models.User).filter(models.User.role == "learner").count()
     total_courses = db.query(models.Course).filter(models.Course.is_deleted == False).count()
     published_courses = db.query(models.Course).filter(models.Course.status == "published", models.Course.is_deleted == False).count()
@@ -39,6 +59,7 @@ def get_admin_stats(
         "recent_users": [{"id": u.id, "full_name": u.full_name, "email": u.email} for u in recent_users],
         "recent_courses": [{"id": c.id, "title": c.title, "status": c.status, "is_paid": c.is_paid, "price": c.price} for c in recent_courses],
     }
+
 
 
 @router.get("/payments", response_model=List[schemas.CoursePaymentAdmin])
@@ -730,6 +751,55 @@ async def suspend_user(user_id: str, suspend: bool = True, db: Session = Depends
     
     db.commit()
     return {"message": f"User suspension status set to {suspend}"}
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_200_OK)
+async def delete_user_lms(
+    user_id: str,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    user = db.query(models.User).filter(models.User.id == str(user_id)).first()
+    if not user:
+        user = db.query(models.User).filter(models.User.email == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own admin account from LMS")
+
+    target_user_id = user.id
+
+    # Also soft delete user on Central User Portal (portal-user)
+    try:
+        await user_portal_client.delete_user(target_user_id)
+    except Exception as e:
+        print(f"Warning: Failed to soft delete user on Central User Portal: {e}")
+
+    # Cascade delete all related LMS records
+    db.query(models.Enrollment).filter(models.Enrollment.user_id == target_user_id).delete()
+    db.query(models.LessonCompletion).filter(models.LessonCompletion.user_id == target_user_id).delete()
+    
+    # Submissions and AnswerSubmissions
+    submissions = db.query(models.Submission).filter(models.Submission.user_id == target_user_id).all()
+    for sub in submissions:
+        db.query(models.AnswerSubmission).filter(models.AnswerSubmission.submission_id == sub.id).delete()
+        db.delete(sub)
+        
+    db.query(models.Wishlist).filter(models.Wishlist.user_id == target_user_id).delete()
+    db.query(models.LessonComment).filter(models.LessonComment.user_id == target_user_id).delete()
+    db.query(models.Certificate).filter(models.Certificate.user_id == target_user_id).delete()
+    db.query(models.CoursePayment).filter(models.CoursePayment.user_id == target_user_id).delete()
+    db.query(models.AuditLog).filter(models.AuditLog.admin_id == target_user_id).delete()
+
+    db.delete(user)
+    
+    log = models.AuditLog(admin_id=current_user.id, action_type="delete_user", target_entity=f"User {user_id}")
+    db.add(log)
+    
+    db.commit()
+    return {"message": f"User {user_id} deleted locally from LMS and soft-deleted from Central User Portal"}
+
+
 
 # Module and Lesson Management (Can be added here or imported)
 @router.post("/courses/{course_id}/modules")
