@@ -95,7 +95,7 @@ async def upload_file(file: UploadFile = File(...), current_user: models.User = 
         shutil.copyfileobj(file.file, buffer)
         
     # Return relative URL
-    return {"url": f"http://localhost:8000/static/uploads/{unique_filename}"}
+    return {"url": f"/static/uploads/{unique_filename}"}
 
 @router.post("/assignments", response_model=schemas.Assignment) 
 def create_assignment(
