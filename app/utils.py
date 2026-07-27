@@ -2,6 +2,12 @@ import os
 import requests
 from typing import Optional
 
+# Base Path Constants
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKEND_DIR = os.path.dirname(APP_DIR)
+STATIC_DIR = os.path.join(BACKEND_DIR, "static")
+UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
+
 SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
 SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
 SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
