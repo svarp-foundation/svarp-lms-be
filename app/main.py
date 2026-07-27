@@ -9,13 +9,19 @@ import os
 from . import models, schemas, auth, database
 from .routers import admin, public, learner, media, auth as auth_router, course_payments
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(os.path.dirname(BASE_DIR), "static")
+UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
+
 models.Base.metadata.create_all(bind=database.engine)
 
 app = FastAPI(title="SVARP GLOBAL ACADEMY API")
 
-# Create static directory if it doesn't exist
-if not os.path.exists("static/uploads"):
-    os.makedirs("static/uploads")
+# Ensure static/uploads directory exists
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Mount static files handler
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # CORS Setup

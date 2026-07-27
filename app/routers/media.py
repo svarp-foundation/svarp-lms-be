@@ -163,7 +163,8 @@ async def get_secure_media(
                 )
         raise HTTPException(status_code=404, detail="Certificate or QR Code not found")
 
-    file_path = os.path.join("backend/static/uploads", filename)
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    file_path = os.path.join(base_dir, "static", "uploads", filename)
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")

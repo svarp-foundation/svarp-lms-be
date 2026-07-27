@@ -74,7 +74,8 @@ def delete_physical_file(file_url: str):
     
     try:
         filename = file_url.split("/")[-1]
-        file_path = os.path.join("backend/static/uploads", filename)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        file_path = os.path.join(base_dir, "static", "uploads", filename)
         if os.path.exists(file_path):
             os.remove(file_path)
             print(f"Deleted physical file: {file_path}")
@@ -83,13 +84,14 @@ def delete_physical_file(file_url: str):
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(auth.require_admin)):
-    
     file_extension = os.path.splitext(file.filename)[1]
     unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = f"backend/static/uploads/{unique_filename}"
     
-    # Ensure directory exists (redundant with main.py check but safe)
-    os.makedirs("backend/static/uploads", exist_ok=True)
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    upload_dir = os.path.join(base_dir, "static", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    file_path = os.path.join(upload_dir, unique_filename)
     
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
