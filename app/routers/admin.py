@@ -904,7 +904,7 @@ def list_submissions(
             question = ans.question
             answer_details.append({
                 "question_id": ans.question_id,
-                "question_text": question.prompt if question else "",
+                "question_text": question.question_text if question else "",
                 "question_type": question.question_type.value if (question and hasattr(question.question_type, 'value')) else str(question.question_type) if question else "",
                 "answer_text": ans.answer_text,
                 "selected_option_id": ans.selected_option_id,
