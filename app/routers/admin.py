@@ -998,6 +998,144 @@ def review_submission(
     db.commit()
     return {"message": "Submission reviewed successfully"}
 
+@router.post("/courses/{course_id}/users/{user_id}/review-all")
+def review_all_course_submissions(
+    course_id: int,
+    user_id: str,
+    review_data: schemas.SubmissionReview,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    assignments = db.query(models.Assignment).filter(models.Assignment.course_id == course_id).all()
+    assignment_ids = [a.id for a in assignments]
+    
+    lessons = db.query(models.Lesson).join(models.Module).filter(models.Module.course_id == course_id).all()
+    lesson_ids = [l.id for l in lessons]
+    if lesson_ids:
+        lesson_assignments = db.query(models.Assignment).filter(models.Assignment.lesson_id.in_(lesson_ids)).all()
+        assignment_ids.extend([la.id for la in lesson_assignments if la.id not in assignment_ids])
+
+    submissions = db.query(models.Submission).filter(
+        models.Submission.user_id == user_id,
+        models.Submission.assignment_id.in_(assignment_ids)
+    ).all() if assignment_ids else []
+
+    if review_data.status == models.SubmissionStatus.APPROVED:
+        for sub in submissions:
+            sub.status = models.SubmissionStatus.APPROVED
+            sub.grade = review_data.grade or 100
+            sub.feedback = review_data.feedback or "Approved all course modules"
+            db.add(sub)
+        
+        for l in lessons:
+            existing = db.query(models.LessonCompletion).filter(
+                models.LessonCompletion.user_id == user_id,
+                models.LessonCompletion.lesson_id == l.id
+            ).first()
+            if not existing:
+                db.add(models.LessonCompletion(user_id=user_id, lesson_id=l.id))
+        
+        completion_engine.check_course_completion(db, user_id, course_id)
+
+    elif review_data.status == models.SubmissionStatus.REJECTED:
+        for sub in submissions:
+            sub.status = models.SubmissionStatus.REJECTED
+            sub.feedback = review_data.feedback or "Course assignments rejected by instructor"
+            db.add(sub)
+        
+        if lesson_ids:
+            db.query(models.LessonCompletion).filter(
+                models.LessonCompletion.user_id == user_id,
+                models.LessonCompletion.lesson_id.in_(lesson_ids)
+            ).delete(synchronize_session=False)
+
+        certs = db.query(models.Certificate).filter(
+            models.Certificate.user_id == user_id,
+            models.Certificate.course_id == course_id,
+            models.Certificate.revoked_at == None
+        ).all()
+        from datetime import datetime
+        for cert in certs:
+            cert.revoked_at = datetime.utcnow()
+            cert.revoked_reason = review_data.feedback or "Course submissions rejected by instructor"
+            db.add(cert)
+
+    db.commit()
+    return {"message": f"All submissions for course reviewed successfully"}
+
+@router.post("/courses/{course_id}/consolidate-to-final")
+def consolidate_course_to_single_final_exam(
+    course_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    lessons = db.query(models.Lesson).join(models.Module).filter(
+        models.Module.course_id == course_id,
+        models.Lesson.lesson_type == models.LessonType.ASSIGNMENT
+    ).all()
+
+    all_questions = []
+    for l in lessons:
+        asgns = db.query(models.Assignment).filter(models.Assignment.lesson_id == l.id).all()
+        for a in asgns:
+            for q in a.questions:
+                all_questions.append(q)
+
+    db_final = db.query(models.Assignment).filter(
+        models.Assignment.course_id == course_id,
+        models.Assignment.lesson_id == None
+    ).first()
+
+    if not db_final:
+        db_final = models.Assignment(
+            course_id=course_id,
+            lesson_id=None,
+            title=f"Final Certification Exam: {course.title}",
+            description="Comprehensive exam covering all course topics."
+        )
+        db.add(db_final)
+        db.flush()
+
+    existing_q_texts = [q.question_text for q in db_final.questions]
+    q_count = len(existing_q_texts)
+    for q in all_questions:
+        if q.question_text not in existing_q_texts:
+            q_count += 1
+            new_q = models.Question(
+                assignment_id=db_final.id,
+                question_text=q.question_text,
+                question_type=q.question_type,
+                order=q_count
+            )
+            db.add(new_q)
+            db.flush()
+
+            if q.question_type == models.QuestionType.MCQ:
+                for opt in q.options:
+                    new_opt = models.QuestionOption(
+                        question_id=new_q.id,
+                        option_text=opt.option_text,
+                        is_correct=opt.is_correct
+                    )
+                    db.add(new_opt)
+
+    for l in lessons:
+        db.query(models.LessonCompletion).filter(models.LessonCompletion.lesson_id == l.id).delete(synchronize_session=False)
+        asgns = db.query(models.Assignment).filter(models.Assignment.lesson_id == l.id).all()
+        for a in asgns:
+            db.query(models.Submission).filter(models.Submission.assignment_id == a.id).delete(synchronize_session=False)
+            db.delete(a)
+        db.delete(l)
+
+    course.require_final_assignment = True
+    course.require_assignment_approval = False
+    db.commit()
+    return {"message": f"Successfully consolidated course '{course.title}' to a single final exam!"}
+
 async def process_bulk_enrollment(course_id: int, file_content: bytes):
     db: Session = database.SessionLocal()
     try:
