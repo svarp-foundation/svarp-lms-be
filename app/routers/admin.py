@@ -963,11 +963,37 @@ def review_submission(
             if assignment.course_id:
                  completion_engine.check_course_completion(db, submission.user_id, assignment.course_id)
             elif assignment.lesson_id:
-                # Fallback path to find course_id via lesson
                 lesson = db.query(models.Lesson).filter(models.Lesson.id == assignment.lesson_id).first()
                 if lesson and lesson.module:
                     course_id = lesson.module.course_id
                     completion_engine.check_course_completion(db, submission.user_id, course_id)
+
+    # If rejected, revoke certificate and remove lesson completion
+    elif review_data.status == models.SubmissionStatus.REJECTED:
+        assignment = submission.assignment
+        course_id = assignment.course_id if assignment else None
+        if not course_id and assignment and assignment.lesson_id:
+            lesson = db.query(models.Lesson).filter(models.Lesson.id == assignment.lesson_id).first()
+            if lesson and lesson.module:
+                course_id = lesson.module.course_id
+
+        if assignment and assignment.lesson_id:
+            db.query(models.LessonCompletion).filter(
+                models.LessonCompletion.user_id == submission.user_id,
+                models.LessonCompletion.lesson_id == assignment.lesson_id
+            ).delete()
+
+        if course_id:
+            certs = db.query(models.Certificate).filter(
+                models.Certificate.user_id == submission.user_id,
+                models.Certificate.course_id == course_id,
+                models.Certificate.revoked_at == None
+            ).all()
+            from datetime import datetime
+            for cert in certs:
+                cert.revoked_at = datetime.utcnow()
+                cert.revoked_reason = review_data.feedback or "Submission rejected during instructor review"
+                db.add(cert)
 
     db.commit()
     return {"message": "Submission reviewed successfully"}

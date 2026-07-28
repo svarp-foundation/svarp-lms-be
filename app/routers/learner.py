@@ -241,19 +241,20 @@ def submit_assignment(
         score_percent = (mcq_score / mcq_total) * 100
         if score_percent >= passing_score:
             submission.status = models.SubmissionStatus.APPROVED
-            # Mark lesson complete
-            if assignment.lesson_id:
-                existing = db.query(models.LessonCompletion).filter(
-                    models.LessonCompletion.user_id == current_user.id,
-                    models.LessonCompletion.lesson_id == assignment.lesson_id
-                ).first()
-                if not existing:
-                    db.add(models.LessonCompletion(
-                        user_id=current_user.id,
-                        lesson_id=assignment.lesson_id
-                    ))
         else:
             submission.status = models.SubmissionStatus.REJECTED
+
+    # Mark lesson complete for non-rejected submissions (provisional instant completion)
+    if assignment.lesson_id and submission.status != models.SubmissionStatus.REJECTED:
+        existing = db.query(models.LessonCompletion).filter(
+            models.LessonCompletion.user_id == current_user.id,
+            models.LessonCompletion.lesson_id == assignment.lesson_id
+        ).first()
+        if not existing:
+            db.add(models.LessonCompletion(
+                user_id=current_user.id,
+                lesson_id=assignment.lesson_id
+            ))
 
     db.commit()
     db.refresh(submission)

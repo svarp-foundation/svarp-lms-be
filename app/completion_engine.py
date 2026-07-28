@@ -60,22 +60,24 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
         if progress < 100:
             return # Missing lessons
 
-    # 3. Check Rule: All Assignments Approved
+    # 3. Check Rule: All Assignments Completed / Submitted (Non-rejected)
     if course.require_assignment_approval:
-        # Get all assignments for the course
         assignments = db.query(models.Assignment).filter(
             models.Assignment.course_id == course_id
         ).all()
         
         for assignment in assignments:
-            # Check if this user has an APPROVED submission for this assignment
             submission = db.query(models.Submission).filter(
                 models.Submission.assignment_id == assignment.id,
                 models.Submission.user_id == user_id,
-                models.Submission.status == models.SubmissionStatus.APPROVED
+                models.Submission.status.in_([
+                    models.SubmissionStatus.APPROVED,
+                    models.SubmissionStatus.SUBMITTED,
+                    models.SubmissionStatus.UNDER_REVIEW
+                ])
             ).first()
             if not submission:
-                return # Missing an approved assignment
+                return # Missing a valid submission
 
     # 4. Check Final Assignment (Course-Level Assignment)
     if course.require_final_assignment:
@@ -87,10 +89,14 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
             submission = db.query(models.Submission).filter(
                 models.Submission.assignment_id == db_final.id,
                 models.Submission.user_id == user_id,
-                models.Submission.status == models.SubmissionStatus.APPROVED
+                models.Submission.status.in_([
+                    models.SubmissionStatus.APPROVED,
+                    models.SubmissionStatus.SUBMITTED,
+                    models.SubmissionStatus.UNDER_REVIEW
+                ])
             ).first()
             if not submission:
-                return # Final Assignment not approved yet
+                return # Final Assignment not submitted yet
 
     # --- SUCCESS! TRIGGER CERTIFICATE ---
     
