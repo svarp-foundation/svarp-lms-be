@@ -910,11 +910,18 @@ def list_submissions(
                 "selected_option_id": ans.selected_option_id,
                 "is_correct": ans.is_correct
             })
+        course_id = assignment.course_id if assignment else None
+        if not course_id and assignment and assignment.lesson_id:
+            lesson = db.query(models.Lesson).filter(models.Lesson.id == assignment.lesson_id).first()
+            if lesson and lesson.module:
+                course_id = lesson.module.course_id
+
         result.append({
             "id": sub.id,
             "user_id": sub.user_id,
             "user_name": user.full_name if user else "Unknown User",
             "user_email": user.email if user else "",
+            "course_id": course_id,
             "assignment_id": sub.assignment_id,
             "assignment_title": assignment.title if assignment else "",
             "status": sub.status.value if hasattr(sub.status, 'value') else str(sub.status),
@@ -1001,11 +1008,14 @@ def review_submission(
 @router.post("/courses/{course_id}/users/{user_id}/review-all")
 def review_all_course_submissions(
     course_id: int,
-    user_id: str,
+    user_id: int,
     review_data: schemas.SubmissionReview,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_admin)
 ):
+    course_id = int(course_id)
+    user_id = int(user_id)
+
     assignments = db.query(models.Assignment).filter(models.Assignment.course_id == course_id).all()
     assignment_ids = [a.id for a in assignments]
     
@@ -1015,10 +1025,11 @@ def review_all_course_submissions(
         lesson_assignments = db.query(models.Assignment).filter(models.Assignment.lesson_id.in_(lesson_ids)).all()
         assignment_ids.extend([la.id for la in lesson_assignments if la.id not in assignment_ids])
 
-    submissions = db.query(models.Submission).filter(
-        models.Submission.user_id == user_id,
-        models.Submission.assignment_id.in_(assignment_ids)
-    ).all() if assignment_ids else []
+    # Find submissions by user_id and assignment_ids or directly by user_id
+    query = db.query(models.Submission).filter(models.Submission.user_id == user_id)
+    if assignment_ids:
+        query = query.filter(models.Submission.assignment_id.in_(assignment_ids))
+    submissions = query.all()
 
     if review_data.status == models.SubmissionStatus.APPROVED:
         for sub in submissions:
