@@ -186,21 +186,42 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     c.setFont("Helvetica", 14)
     c.drawCentredString(width / 2.0, img_y - 25, "has successfully completed the course")
     
-    # 6e. Course Title
+    # 6e. Course Title (With dynamic multi-line wrapping and font scaling)
     c.setFillColor(colors.HexColor("#9bcf9b"))
-    c.setFont("Helvetica-Bold", 28)
-    c.drawCentredString(width / 2.0, img_y - 65, course_title)
+    import textwrap
+
+    title_len = len(course_title)
+    if title_len > 50:
+        font_size = 18
+        leading = 22
+        wrap_chars = 42
+    elif title_len > 35:
+        font_size = 22
+        leading = 26
+        wrap_chars = 36
+    else:
+        font_size = 28
+        leading = 32
+        wrap_chars = 30
+
+    c.setFont("Helvetica-Bold", font_size)
+    title_lines = textwrap.wrap(course_title, width=wrap_chars)
     
+    current_title_y = img_y - 55
+    for line in title_lines:
+        c.drawCentredString(width / 2.0, current_title_y, line)
+        current_title_y -= leading
+
     # 7. Honour Badge (if progress >= 75)
     if progress >= 75:
         c.setFillColor(colors.HexColor("#9bcf9b"))
         c.setStrokeColor(colors.white)
         c.setLineWidth(1)
-        badge_y = img_y - 110
-        c.roundRect(width/2 - 80, badge_y, 160, 25, 12, fill=1, stroke=1)
+        badge_y = current_title_y - 15
+        c.roundRect(width/2 - 80, badge_y, 160, 22, 11, fill=1, stroke=1)
         c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(width/2, badge_y + 7, "PASS WITH HONOUR")
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(width/2, badge_y + 6, "PASS WITH HONOUR")
     
     # 8. Footer Section
     # ID and Date (Bottom Left)
