@@ -110,7 +110,13 @@ class UserPortalClient:
             headers=self._form_auth_headers(),
         )
 
-    async def create_user(self, email: str, password: str, full_name: str) -> dict:
+    async def create_user(
+        self,
+        email: str,
+        password: str,
+        full_name: str,
+        roles: Optional[Any] = None,
+    ) -> dict:
         """Register a new user on portal-user."""
         return await self._request(
             "POST",
@@ -119,6 +125,7 @@ class UserPortalClient:
                 "email": email,
                 "password": password,
                 "full_name": full_name,
+                "roles": roles if roles is not None else ["learner"],
             },
         )
 

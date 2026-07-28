@@ -9,7 +9,7 @@ STATIC_DIR = os.path.join(BACKEND_DIR, "static")
 UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
 
 SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
-SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+SVARP_ADMIN_BASE_URL = (os.getenv("SVARP_ADMIN_BASE_URL") or "").rstrip("/")
 SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
 def fetch_user_membership(email: str) -> Optional[dict]:

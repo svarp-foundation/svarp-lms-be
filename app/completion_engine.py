@@ -105,7 +105,7 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
     import os
     import requests
     SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
-    SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+    SVARP_ADMIN_BASE_URL = (os.getenv("SVARP_ADMIN_BASE_URL") or "").rstrip("/")
     SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
     
     try:

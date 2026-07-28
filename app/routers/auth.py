@@ -49,6 +49,7 @@ async def register_user(user: schemas.UserCreate):
             email=user.email,
             password=user.password,
             full_name=full_name,
+            roles=["learner"],
         )
         roles = portal_user.get("roles", [])
         primary_role = "admin" if "admin" in roles else "learner"

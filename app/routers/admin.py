@@ -279,7 +279,8 @@ async def bulk_create_users(
             portal_user = await user_portal_client.create_user(
                 email=email,
                 password=password,
-                full_name=full_name or email.split('@')[0].title()
+                full_name=full_name or email.split('@')[0].title(),
+                roles=["learner"]
             )
             user_id = str(portal_user.get("user_id"))
             
@@ -954,7 +955,8 @@ async def process_bulk_enrollment(course_id: int, file_content: bytes):
                         portal_user = await user_portal_client.create_user(
                             email=email,
                             password="Changeme@123",
-                            full_name=email.split('@')[0].title()
+                            full_name=email.split('@')[0].title(),
+                            roles=["learner"]
                         )
                     except Exception as e:
                         print(f"Bulk enrollment portal creation error for {email}: {e}")

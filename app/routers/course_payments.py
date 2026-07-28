@@ -13,7 +13,7 @@ CPP_API_URL = os.getenv("CPP_API_URL")
 CPP_APP_KEY = os.getenv("CPP_APP_KEY")
 CPP_APP_SECRET = os.getenv("CPP_APP_SECRET")
 SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
-SVARP_ADMIN_BASE_URL = os.getenv("SVARP_ADMIN_BASE_URL", "https://svarp-website-be.svarp.cloud")
+SVARP_ADMIN_BASE_URL = (os.getenv("SVARP_ADMIN_BASE_URL") or "").rstrip("/")
 SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
 
