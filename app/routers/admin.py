@@ -883,7 +883,47 @@ def delete_lesson(lesson_id: int, db: Session = Depends(database.get_db), curren
     
     db.delete(lesson)
     db.commit()
-    return None
+@router.get("/submissions")
+def list_submissions(
+    status: Optional[str] = Query(None),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    query = db.query(models.Submission)
+    if status:
+        query = query.filter(models.Submission.status == status)
+    submissions = query.order_by(models.Submission.submitted_at.desc()).all()
+    
+    result = []
+    for sub in submissions:
+        user = db.query(models.User).filter(models.User.id == sub.user_id).first()
+        assignment = sub.assignment
+        answers = db.query(models.AnswerSubmission).filter(models.AnswerSubmission.submission_id == sub.id).all()
+        answer_details = []
+        for ans in answers:
+            question = ans.question
+            answer_details.append({
+                "question_id": ans.question_id,
+                "question_text": question.prompt if question else "",
+                "question_type": question.question_type.value if (question and hasattr(question.question_type, 'value')) else str(question.question_type) if question else "",
+                "answer_text": ans.answer_text,
+                "selected_option_id": ans.selected_option_id,
+                "is_correct": ans.is_correct
+            })
+        result.append({
+            "id": sub.id,
+            "user_id": sub.user_id,
+            "user_name": user.full_name if user else "Unknown User",
+            "user_email": user.email if user else "",
+            "assignment_id": sub.assignment_id,
+            "assignment_title": assignment.title if assignment else "",
+            "status": sub.status.value if hasattr(sub.status, 'value') else str(sub.status),
+            "grade": sub.grade,
+            "feedback": sub.feedback,
+            "submitted_at": sub.submitted_at,
+            "answers": answer_details
+        })
+    return result
 
 @router.post("/submissions/{submission_id}/review")
 def review_submission(
