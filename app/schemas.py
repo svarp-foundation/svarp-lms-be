@@ -317,6 +317,7 @@ class CoursePaymentCreate(BaseModel):
     course_id: int
     amount: float
     currency: str = "INR"
+    coupon_code: Optional[str] = None
 
 class CoursePaymentOrderResponse(BaseModel):
     id: int
@@ -332,6 +333,10 @@ class CoursePaymentVerify(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+
+class CouponValidateRequest(BaseModel):
+    code: str
+    course_id: int
 
 class CoursePaymentAdmin(BaseModel):
     id: int

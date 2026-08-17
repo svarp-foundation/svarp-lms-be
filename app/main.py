@@ -3,16 +3,27 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
+from contextlib import asynccontextmanager
 from datetime import timedelta
 import os
 
 from . import models, schemas, auth, database
 from .utils import STATIC_DIR, UPLOAD_DIR
 from .routers import admin, public, learner, media, auth as auth_router, course_payments
+from .clients.user_portal_client import user_portal_client
 
 models.Base.metadata.create_all(bind=database.engine)
 
-app = FastAPI(title="SVARP GLOBAL ACADEMY API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    yield
+    # Shutdown — close the persistent HTTP client
+    await user_portal_client.close()
+
+
+app = FastAPI(title="SVARP GLOBAL ACADEMY API", lifespan=lifespan)
 
 # Ensure static/uploads directory exists
 os.makedirs(UPLOAD_DIR, exist_ok=True)

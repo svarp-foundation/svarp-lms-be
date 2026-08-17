@@ -16,6 +16,10 @@ SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
 SVARP_ADMIN_BASE_URL = (os.getenv("SVARP_ADMIN_BASE_URL") or "").rstrip("/")
 SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
 
+COUPON_API_URL = os.getenv("COUPON_API_URL")
+COUPON_APP_KEY = os.getenv("COUPON_APP_KEY")
+COUPON_APP_SECRET = os.getenv("COUPON_APP_SECRET")
+
 
 @router.post("/create-order", response_model=schemas.CoursePaymentOrderResponse)
 def create_course_payment_order(
@@ -85,11 +89,57 @@ def create_course_payment_order(
     if existing_enrollment:
         raise HTTPException(status_code=400, detail="Already enrolled in this course")
 
-    # Calculate GST (18%)
+    # Calculate GST (18%) and apply coupon discount if applicable
+    discount_amount = 0.0
+    coupon_id = None
+    
+    if payment_data.coupon_code:
+        try:
+            coupon_res = requests.post(
+                f"{COUPON_API_URL}/coupons/validate",
+                headers={
+                    "x-api-key": COUPON_APP_KEY,
+                    "x-api-secret": COUPON_APP_SECRET,
+                },
+                json={
+                    "code": payment_data.coupon_code,
+                    "user_id": current_user.email,
+                    "subtotal": float(course.price),
+                    "items": [
+                        {
+                            "id": str(course.id),
+                            "price": float(course.price),
+                            "quantity": 1
+                        }
+                    ]
+                }
+            )
+            if coupon_res.status_code in (400, 404):
+                try:
+                    res_json = coupon_res.json()
+                    msg = res_json.get("detail") or res_json.get("message") or "Invalid coupon code"
+                except Exception:
+                    msg = "Invalid coupon code"
+                raise HTTPException(status_code=400, detail=msg)
+
+            coupon_res.raise_for_status()
+            coupon_res_data = coupon_res.json()
+            if coupon_res_data.get("valid"):
+                discount_amount = float(coupon_res_data.get("discount_amount") or 0.0)
+                coupon_id = coupon_res_data.get("coupon_id")
+            else:
+                raise HTTPException(status_code=400, detail=coupon_res_data.get("message") or "Invalid coupon code")
+        except HTTPException:
+            raise
+        except requests.RequestException as e:
+            print(f"Coupon Validation Error: {e}")
+            raise HTTPException(status_code=502, detail="Discount coupon validator service currently unavailable")
+
     gst_rate = 0.18
     base_amount = course.price
-    gst_amount = base_amount * gst_rate
-    total_amount = base_amount + gst_amount
+    discounted_base = max(0.0, base_amount - discount_amount)
+    gst_amount = discounted_base * gst_rate
+    total_amount = discounted_base + gst_amount
 
     # Call CPP to create a Razorpay order
     headers = {
@@ -131,6 +181,9 @@ def create_course_payment_order(
         amount=total_amount,
         currency=payment_data.currency,
         status=order_data.get("status", "created"),
+        coupon_code=payment_data.coupon_code,
+        coupon_id=coupon_id,
+        discount_amount=discount_amount,
     )
     db.add(db_payment)
     db.commit()
@@ -190,6 +243,26 @@ def verify_course_payment(
     db_payment.status = "success"
     db.commit()
 
+    # Log successful coupon claim in Coupon Portal if applied
+    if db_payment.coupon_id:
+        try:
+            claim_response = requests.post(
+                f"{COUPON_API_URL}/coupons/claim",
+                headers={
+                    "x-api-key": COUPON_APP_KEY,
+                    "x-api-secret": COUPON_APP_SECRET,
+                },
+                json={
+                    "coupon_id": db_payment.coupon_id,
+                    "user_id": current_user.email,
+                    "order_id": db_payment.payment_id or "unknown",
+                    "payment_verified": True
+                }
+            )
+            claim_response.raise_for_status()
+        except Exception as e:
+            print(f"Coupon Claim Error: {e}")
+
     # Auto-enroll the user in the course
     existing_enrollment = db.query(models.Enrollment).filter(
         models.Enrollment.user_id == current_user.id,
@@ -209,3 +282,54 @@ def verify_course_payment(
         "message": "Payment verified. You have been enrolled in the course.",
         "course_id": db_payment.course_id,
     }
+
+
+@router.post("/validate-coupon")
+def validate_checkout_coupon(
+    request_data: schemas.CouponValidateRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner),
+):
+    """Validate coupon code and return calculated discount details."""
+    course = db.query(models.Course).filter(
+        models.Course.id == request_data.course_id,
+        models.Course.is_deleted == False,
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+        
+    try:
+        coupon_res = requests.post(
+            f"{COUPON_API_URL}/coupons/validate",
+            headers={
+                "x-api-key": COUPON_APP_KEY,
+                "x-api-secret": COUPON_APP_SECRET,
+            },
+            json={
+                "code": request_data.code,
+                "user_id": current_user.email,
+                "subtotal": float(course.price),
+                "items": [
+                    {
+                        "id": str(course.id),
+                        "price": float(course.price),
+                        "quantity": 1
+                    }
+                ]
+            }
+        )
+        if coupon_res.status_code in (400, 404):
+            try:
+                res_json = coupon_res.json()
+                msg = res_json.get("detail") or res_json.get("message") or "Invalid coupon code"
+            except Exception:
+                msg = "Invalid coupon code"
+            return {"valid": False, "message": msg, "discount_amount": 0.0}
+
+        coupon_res.raise_for_status()
+        coupon_res_data = coupon_res.json()
+        return coupon_res_data
+    except requests.RequestException as e:
+        print(f"Coupon Validation Error: {e}")
+        return {"valid": False, "message": "Coupon service is temporarily unavailable. Please try again later.", "discount_amount": 0.0}
+

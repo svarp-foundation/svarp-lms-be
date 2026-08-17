@@ -6,6 +6,7 @@ import os
 import logging
 from typing import Optional, Any
 import httpx
+import asyncio
 from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +18,11 @@ USER_PORTAL_URL = os.getenv("USER_PORTAL_URL", "http://localhost:8000").rstrip("
 USER_PORTAL_API_KEY = os.getenv("USER_PORTAL_API_KEY", "")
 USER_PORTAL_API_SECRET = os.getenv("USER_PORTAL_API_SECRET", "")
 
+# Reduced timeouts: 10s read (was 20s), 5s connect (was 10s)
 DEFAULT_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+
+# Max retries reduced from 3 to 2
+MAX_RETRIES = 2
 
 
 class ServiceError(Exception):
@@ -28,6 +33,9 @@ class ServiceError(Exception):
 
 
 class UserPortalClient:
+    def __init__(self):
+        self._client: Optional[httpx.AsyncClient] = None
+
     @property
     def base_url(self) -> str:
         url = os.getenv("USER_PORTAL_URL", "http://localhost:8000").rstrip("/")
@@ -42,6 +50,25 @@ class UserPortalClient:
     @property
     def api_secret(self) -> str:
         return os.getenv("USER_PORTAL_API_SECRET", "")
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create a persistent AsyncClient with connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=DEFAULT_TIMEOUT,
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30,
+                ),
+            )
+        return self._client
+
+    async def close(self):
+        """Close the persistent client. Call during app shutdown."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     def _auth_headers(self, bearer_token: Optional[str] = None) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -74,7 +101,10 @@ class UserPortalClient:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         req_headers = headers or self._auth_headers(bearer_token)
 
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        client = await self._get_client()
+        response = None
+
+        for attempt in range(MAX_RETRIES):
             try:
                 response = await client.request(
                     method,
@@ -84,22 +114,38 @@ class UserPortalClient:
                     data=data,
                     params=params,
                 )
+                break
+            except httpx.ConnectTimeout:
+                if attempt == MAX_RETRIES - 1:
+                    raise ServiceError(503, "Connection to User Portal timed out")
+                await asyncio.sleep(0.3)
             except httpx.ConnectError:
-                raise ServiceError(503, "User Portal service is unavailable")
+                if attempt == MAX_RETRIES - 1:
+                    raise ServiceError(503, "User Portal service is unavailable")
+                await asyncio.sleep(0.3)
             except httpx.ReadTimeout:
-                raise ServiceError(504, "User Portal service timed out")
+                if attempt == MAX_RETRIES - 1:
+                    raise ServiceError(504, "User Portal service timed out")
+                await asyncio.sleep(0.3)
+            except httpx.RequestError as exc:
+                if attempt == MAX_RETRIES - 1:
+                    raise ServiceError(502, f"Failed to communicate with User Portal: {exc}")
+                await asyncio.sleep(0.3)
 
-            if response.status_code >= 400:
-                try:
-                    detail = response.json().get("detail", response.text)
-                except Exception:
-                    detail = response.text
-                raise ServiceError(response.status_code, str(detail))
+        if response is None:
+            raise ServiceError(502, "Failed to get response from User Portal")
 
-            if response.status_code == 204 or not response.content:
-                return {}
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail", response.text)
+            except Exception:
+                detail = response.text
+            raise ServiceError(response.status_code, str(detail))
 
-            return response.json()
+        if response.status_code == 204 or not response.content:
+            return {}
+
+        return response.json()
 
     async def login(self, email: str, password: str) -> dict:
         """Authenticate user via OAuth2 password flow on portal-user."""
@@ -172,4 +218,3 @@ class UserPortalClient:
 
 
 user_portal_client = UserPortalClient()
-

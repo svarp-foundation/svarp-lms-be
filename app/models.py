@@ -204,6 +204,9 @@ class CoursePayment(Base):
     amount = Column(Float)
     currency = Column(String, default="INR")
     status = Column(String, default=CoursePaymentStatus.CREATED)
+    coupon_code = Column(String, nullable=True)
+    coupon_id = Column(Integer, nullable=True)
+    discount_amount = Column(Float, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
