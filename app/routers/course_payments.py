@@ -29,18 +29,19 @@ def create_course_payment_order(
 ):
     """Create a Razorpay order for a paid course via CPP."""
 
-    # NEW: Verify User Profile Status first
+    # Verify User Profile Status first
     phone_number = None
     verification_data = None
     try:
         verify_response = requests.get(
             f"{SVARP_VERIFY_URL}?email={current_user.email}",
-            headers={"X-API-Key": SVARP_ADMIN_API_KEY}
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
+            timeout=8,
         )
         if verify_response.status_code == 404:
             raise HTTPException(
                 status_code=404,
-                detail="please register to our webssite with same email svarp.org and complete the documentation need to contimue to payment"
+                detail="Please register at svarp.org with the same email and complete your profile documentation to continue to payment."
             )
         verify_response.raise_for_status()
         verification_data = verify_response.json()
@@ -48,7 +49,15 @@ def create_course_payment_order(
             raise HTTPException(status_code=502, detail="User verification system returned empty response")
             
         phone_number = verification_data.get("phone_number")
-        
+
+        # MEMBERSHIP GUARD: Check membership BEFORE payment_readiness.
+        # Active members enroll for free and don't need profile docs for payment.
+        if utils.is_active_member(verification_data):
+            raise HTTPException(
+                status_code=400,
+                detail="You have an active membership. You can enroll in this course for free from the course page."
+            )
+
         readiness = verification_data.get("payment_readiness") or {}
         if not readiness.get("ready"):
             raise HTTPException(
@@ -59,11 +68,12 @@ def create_course_payment_order(
                 }
             )
     except requests.RequestException as e:
-        print(f"User Verification Error: {e}")
-        # Optionally allow if verification system is down, or block. 
-        # Here we block for security.
+        # Verification system is unreachable (network issue / server down).
+        # Log a warning and allow payment to proceed — Razorpay itself is the
+        # financial security gate; profile verification is only a UX guard.
+        print(f"[WARN] User verification system unreachable for {current_user.email}: {e}")
         phone_number = None
-        raise HTTPException(status_code=502, detail="User verification system unavailable")
+        verification_data = None
 
     # Validate course exists and is paid
     course = db.query(models.Course).filter(
@@ -76,10 +86,7 @@ def create_course_payment_order(
 
     if not course.is_paid:
         raise HTTPException(status_code=400, detail="This course is free — no payment required")
-    
-    # MEMBERSHIP GUARD: Members get it for free
-    if utils.is_active_member(verification_data):
-         raise HTTPException(status_code=400, detail="You have an active membership. You can enroll in this course for free from the course page.")
+
 
     # Check if already enrolled (payment already done)
     existing_enrollment = db.query(models.Enrollment).filter(

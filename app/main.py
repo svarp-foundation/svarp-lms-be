@@ -9,7 +9,7 @@ import os
 
 from . import models, schemas, auth, database
 from .utils import STATIC_DIR, UPLOAD_DIR
-from .routers import admin, public, learner, media, auth as auth_router, course_payments
+from .routers import admin, public, learner, media, auth as auth_router, course_payments, webhooks
 from .clients.user_portal_client import user_portal_client
 
 models.Base.metadata.create_all(bind=database.engine)
@@ -51,10 +51,9 @@ app.include_router(learner.router)
 app.include_router(admin.router)
 app.include_router(media.router)
 app.include_router(course_payments.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/")
 def read_root():
     return {"message": "Welcome to SVARP LMS API"}
-
-

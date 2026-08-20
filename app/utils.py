@@ -83,11 +83,39 @@ def fetch_user_membership(email: str) -> Optional[dict]:
 
 def is_active_member(membership_data: Optional[dict]) -> bool:
     """
-    Check if the membership data indicates an active membership.
+    Check if the membership data indicates a currently active membership.
+    Validates:
+      - membership field is present (not None)
+      - is_active flag is True
+      - end_date has not expired
     """
     if not membership_data:
         return False
-    # Based on the user's request, I'll assume if it's not None, it's an active membership or we check a 'membership' field.
-    # The user's JSON had "membership": null. 
-    # If the response itself is the user data, we check user_data.get("membership")
-    return membership_data.get("membership") is not None
+
+    membership = membership_data.get("membership")
+    if not membership:
+        return False
+
+    # Must be explicitly active
+    if not membership.get("is_active", False):
+        return False
+
+    # Must not have expired
+    end_date_str = membership.get("end_date")
+    if end_date_str:
+        from datetime import datetime, timezone
+        try:
+            # Parse ISO format; handle with or without timezone
+            end_date_str_clean = end_date_str.replace("Z", "+00:00")
+            end_date = datetime.fromisoformat(end_date_str_clean)
+            now = datetime.now(timezone.utc)
+            # Make end_date timezone-aware if it isn't
+            if end_date.tzinfo is None:
+                end_date = end_date.replace(tzinfo=timezone.utc)
+            if now > end_date:
+                return False
+        except (ValueError, TypeError):
+            # If we can't parse the date, be conservative and deny
+            return False
+
+    return True
