@@ -16,8 +16,15 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite:///"):
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir)
 
+# Build engine with appropriate args for each backend
+connect_args = {}
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
