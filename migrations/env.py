@@ -20,9 +20,9 @@ load_dotenv()
 # access to the values within the .ini file in use.
 config = context.config
 
-# Override the database URL with the environment variable DATABASE_URL
+# Get database URL from environment (don't pass through configparser
+# because %-encoded characters in passwords break its interpolation)
 db_url = os.getenv("DATABASE_URL", "sqlite:///./db/lms.db")
-config.set_main_option("sqlalchemy.url", db_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -44,7 +44,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = db_url
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -64,11 +64,8 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    from sqlalchemy import create_engine
+    connectable = create_engine(db_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(
