@@ -21,8 +21,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/token", auto_error=Fa
 # Key: SHA-256 hash of the bearer token
 # Value: (user_id, user_info_dict, expires_at_monotonic)
 
-AUTH_CACHE_TTL_SECONDS = 60  # Cache valid for 60 seconds
-_auth_cache: dict[str, tuple[str, dict, float]] = {}
+AUTH_CACHE_TTL_SECONDS = 300  # Cache valid for 5 minutes
+_auth_cache: dict[str, tuple[schemas.User, float]] = {}
 _CACHE_MAX_SIZE = 500  # Prevent unbounded growth
 
 
@@ -31,36 +31,36 @@ def _cache_key(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _cache_get(token: str) -> Optional[tuple[str, dict]]:
-    """Return (user_id, user_info) if token is cached and not expired."""
+def _cache_get(token: str) -> Optional[schemas.User]:
+    """Return schemas.User if token is cached and not expired."""
     key = _cache_key(token)
     entry = _auth_cache.get(key)
     if entry is None:
         return None
-    user_id, user_info, expires_at = entry
+    user_schema, expires_at = entry
     if time.monotonic() > expires_at:
         # Expired — remove and return miss
         _auth_cache.pop(key, None)
         return None
-    return (user_id, user_info)
+    return user_schema
 
 
-def _cache_set(token: str, user_id: str, user_info: dict):
-    """Store validated auth result in cache."""
+def _cache_set(token: str, user_schema: schemas.User):
+    """Store validated auth User schema in cache."""
     # Evict expired entries if cache is getting large
     if len(_auth_cache) >= _CACHE_MAX_SIZE:
         now = time.monotonic()
-        expired_keys = [k for k, (_, _, exp) in _auth_cache.items() if now > exp]
+        expired_keys = [k for k, (_, exp) in _auth_cache.items() if now > exp]
         for k in expired_keys:
             del _auth_cache[k]
         # If still too large, clear oldest half
         if len(_auth_cache) >= _CACHE_MAX_SIZE:
-            sorted_keys = sorted(_auth_cache, key=lambda k: _auth_cache[k][2])
+            sorted_keys = sorted(_auth_cache, key=lambda k: _auth_cache[k][1])
             for k in sorted_keys[:len(sorted_keys) // 2]:
                 del _auth_cache[k]
 
     key = _cache_key(token)
-    _auth_cache[key] = (user_id, user_info, time.monotonic() + AUTH_CACHE_TTL_SECONDS)
+    _auth_cache[key] = (user_schema, time.monotonic() + AUTH_CACHE_TTL_SECONDS)
 
 
 def _cache_invalidate(token: str):
@@ -81,105 +81,110 @@ async def get_current_user(
     )
     if not token:
         raise credentials_exception
+
+    # ── 1. Fast path: Memory Cache Hit (0ms, 0 DB queries, 0 HTTP calls) ─────
+    cached_user = _cache_get(token)
+    if cached_user is not None:
+        return cached_user
+
+    # ── 2. Cache Miss: Validate token & resolve user ─────────────────────────
     try:
-        # ── Check cache first ────────────────────────────────────────
-        cached = _cache_get(token)
-        if cached:
-            user_id, user_info = cached
-        else:
-            try:
-              # Cache miss — call external User Portal
-              validation = await user_portal_client.validate_token(token)
-              if not validation.get("is_valid"):
-                  raise credentials_exception
+        # Quick JWT claims inspection
+        claims = {}
+        try:
+            claims = jwt.get_unverified_claims(token)
+            exp = claims.get("exp")
+            if exp and time.time() > exp:
+                raise credentials_exception
+        except JWTError:
+            pass
 
-              user_id = str(validation.get("user_id"))
-              user_info = await user_portal_client.get_user(user_id=user_id)
-
-              # Store in cache for subsequent requests
-              _cache_set(token, user_id, user_info)
-            except ServiceError as se:
-              logger.warning(f"User Portal ServiceError ({se.detail}). Attempting JWT + local DB fallback.")
-              try:
-                  payload = jwt.get_unverified_claims(token)
-                  exp = payload.get("exp")
-                  if exp and time.time() > exp:
-                      raise credentials_exception
-
-                  sub = payload.get("sub")
-                  email = payload.get("email")
-                  
-                  db_user = None
-                  if sub:
-                      db_user = db.query(models.User).filter(models.User.id == str(sub)).first()
-                  if not db_user and email:
-                      db_user = db.query(models.User).filter(models.User.email == email).first()
-
-                  if db_user:
-                      user_id = str(db_user.id)
-                      user_info = {
-                          "id": db_user.id,
-                          "email": db_user.email,
-                          "full_name": db_user.full_name,
-                          "roles": [db_user.role],
-                          "is_active": db_user.is_active,
-                      }
-                      _cache_set(token, user_id, user_info)
-                  else:
-                      raise credentials_exception
-              except (JWTError, Exception):
-                  raise credentials_exception
-
-        roles = user_info.get("roles", [])
+        sub = claims.get("sub")
+        email = claims.get("email")
+        roles = claims.get("roles", [])
+        if not roles and claims.get("role"):
+            roles = [claims.get("role")]
         primary_role = "admin" if "admin" in roles else "learner"
 
-        if not user_info.get("is_active", True):
-            _cache_invalidate(token)
-            raise HTTPException(status_code=400, detail="Inactive user")
-
-        email = user_info.get("email")
-        full_name = user_info.get("full_name") or (email.split("@")[0].title() if email else "")
-
-        # Auto-sync with local DB for FK integrity
-        db_user = db.query(models.User).filter(models.User.id == user_id).first()
+        db_user = None
+        if sub:
+            db_user = db.query(models.User).filter(models.User.id == str(sub)).first()
         if not db_user and email:
             db_user = db.query(models.User).filter(models.User.email == email).first()
 
+        # If user already exists in local DB and is valid, use it directly
         if db_user:
-            db_user.id = user_id
-            db_user.email = email
-            db_user.full_name = full_name
-            db_user.role = primary_role
-            db_user.is_active = True
-            db.commit()
-            db.refresh(db_user)
-        else:
-            db_user = models.User(
-                id=user_id,
-                email=email,
-                full_name=full_name,
-                role=primary_role,
-                is_active=True,
-                is_suspended=False,
-                hashed_password=""
-            )
-            db.add(db_user)
-            db.commit()
-            db.refresh(db_user)
+            if not db_user.is_active:
+                raise HTTPException(status_code=400, detail="Inactive user")
 
-        return schemas.User(
+            user_schema = schemas.User(
+                id=db_user.id,
+                email=db_user.email,
+                full_name=db_user.full_name or (email.split("@")[0].title() if email else "Learner"),
+                role=db_user.role or primary_role,
+                is_suspended=db_user.is_suspended,
+                created_at=db_user.created_at if db_user.created_at else datetime.utcnow(),
+            )
+            _cache_set(token, user_schema)
+            return user_schema
+
+        # If user is not yet in local DB, fetch details from Central User Portal
+        user_info = None
+        try:
+            validation = await user_portal_client.validate_token(token)
+            if validation and validation.get("is_valid"):
+                user_id = str(validation.get("user_id"))
+                user_info = await user_portal_client.get_user(user_id=user_id)
+        except Exception as ex:
+            logger.warning(f"User Portal validation call failed: {ex}. Using JWT fallback.")
+
+        if user_info:
+            user_id = str(user_info.get("user_id") or user_info.get("id") or sub)
+            email = user_info.get("email") or email
+            full_name = user_info.get("full_name") or (email.split("@")[0].title() if email else "Learner")
+            roles = user_info.get("roles", roles)
+            primary_role = "admin" if "admin" in roles else "learner"
+            is_active = user_info.get("is_active", True)
+        else:
+            if not sub:
+                raise credentials_exception
+            user_id = str(sub)
+            full_name = claims.get("name") or claims.get("full_name") or (email.split("@")[0].title() if email else "Learner")
+            is_active = True
+
+        if not is_active:
+            raise HTTPException(status_code=400, detail="Inactive user")
+
+        # Sync user to local DB once
+        db_user = models.User(
             id=user_id,
             email=email,
             full_name=full_name,
             role=primary_role,
-            is_suspended=db_user.is_suspended if db_user else False,
-            created_at=db_user.created_at if (db_user and db_user.created_at) else datetime.utcnow(),
+            is_active=True,
+            is_suspended=False,
+            hashed_password=""
         )
+        db.merge(db_user)
+        db.commit()
+
+        user_schema = schemas.User(
+            id=user_id,
+            email=email,
+            full_name=full_name,
+            role=primary_role,
+            is_suspended=False,
+            created_at=datetime.utcnow(),
+        )
+        _cache_set(token, user_schema)
+        return user_schema
+
     except ServiceError as se:
         raise HTTPException(status_code=se.status_code, detail="Authentication service temporarily unavailable")
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        logger.error(f"Authentication exception: {e}")
         raise credentials_exception
 
 

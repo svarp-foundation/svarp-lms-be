@@ -52,11 +52,21 @@ def _membership_cache_set(email: str, data: Optional[dict]):
     _membership_cache[email] = (data, time.monotonic() + _MEMBERSHIP_CACHE_TTL)
 
 
+# Persistent HTTP session with connection pooling
+_http_session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=1)
+_http_session.mount("https://", adapter)
+_http_session.mount("http://", adapter)
+
+
 def fetch_user_membership(email: str) -> Optional[dict]:
     """
     Fetch user membership and profile data from the external SVARP Admin API.
     Results are cached for 5 minutes to reduce external API overhead.
     """
+    if not email:
+        return None
+
     # Check cache first
     hit, cached_data = _membership_cache_get(email)
     if hit:
@@ -64,10 +74,10 @@ def fetch_user_membership(email: str) -> Optional[dict]:
 
     # Cache miss — call external API
     try:
-        response = requests.get(
+        response = _http_session.get(
             f"{SVARP_VERIFY_URL}?email={email}",
-            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
-            timeout=5
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY or ""},
+            timeout=3
         )
         if response.status_code == 200:
             user_data = response.json()

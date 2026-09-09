@@ -1,7 +1,7 @@
 import os
 import requests
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 from sqlalchemy.sql import func
 from .. import models, schemas, database, auth, completion_engine, utils
@@ -16,13 +16,24 @@ router = APIRouter(
 @router.get("/courses", response_model=List[schemas.EnrolledCourse])
 def read_my_courses(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_learner)):
     # Return courses the user is enrolled in that are not deleted
-    enrollments = db.query(models.Enrollment).join(models.Course).filter(
-        models.Enrollment.user_id == current_user.id,
-        models.Course.is_deleted == False
-    ).all()
+    enrollments = (
+        db.query(models.Enrollment)
+        .join(models.Course, models.Course.id == models.Enrollment.course_id)
+        .filter(
+            models.Enrollment.user_id == current_user.id,
+            models.Course.is_deleted == False
+        )
+        .all()
+    )
+    if not enrollments:
+        return []
+
+    course_ids = [enr.course_id for enr in enrollments]
+    progress_map = completion_engine.calculate_dynamic_progress_batch(db, current_user.id, course_ids)
+
     courses_with_progress = []
     for enr in enrollments:
-        prog = completion_engine.calculate_dynamic_progress(db, current_user.id, enr.course_id)
+        prog = progress_map.get(enr.course_id, 0)
         course_data = {c.name: getattr(enr.course, c.name) for c in enr.course.__table__.columns}
         courses_with_progress.append(schemas.EnrolledCourse(**course_data, progress=prog))
     return courses_with_progress
@@ -322,58 +333,61 @@ def get_course_content(
     if not enrollment:
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
         
-    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
+    course = (
+        db.query(models.Course)
+        .options(joinedload(models.Course.modules).joinedload(models.Module.lessons))
+        .filter(models.Course.id == course_id, models.Course.is_deleted == False)
+        .first()
+    )
     if not course:
         raise HTTPException(status_code=404, detail="Course not found or deleted")
         
     # Get all completions for this user & course
-    completions = db.query(models.LessonCompletion).join(models.Lesson).join(models.Module).filter(
-        models.LessonCompletion.user_id == current_user.id,
-        models.Module.course_id == course_id
-    ).all()
-    completed_lesson_ids = {c.lesson_id for c in completions}
+    completions = (
+        db.query(models.LessonCompletion.lesson_id)
+        .join(models.Lesson, models.Lesson.id == models.LessonCompletion.lesson_id)
+        .join(models.Module, models.Module.id == models.Lesson.module_id)
+        .filter(
+            models.LessonCompletion.user_id == current_user.id,
+            models.Module.course_id == course_id
+        )
+        .all()
+    )
+    completed_lesson_ids = {c[0] for c in completions}
 
-    # Also collect assignment lessons that have *any* submission (submitted/under_review/approved/rejected).
-    # These count as "traversable" — the learner has done their part, so the next lesson
-    # should not be locked even if approval is still pending.
-    submitted_assignment_lesson_ids: set[int] = set()
+    # Also collect assignment lessons that have any submission (submitted/under_review/approved/rejected)
     submitted_subs = (
-        db.query(models.Submission, models.Assignment)
-        .join(models.Assignment, models.Submission.assignment_id == models.Assignment.id)
+        db.query(models.Assignment.lesson_id)
+        .join(models.Submission, models.Submission.assignment_id == models.Assignment.id)
+        .join(models.Lesson, models.Lesson.id == models.Assignment.lesson_id)
+        .join(models.Module, models.Module.id == models.Lesson.module_id)
         .filter(
             models.Submission.user_id == current_user.id,
+            models.Module.course_id == course_id,
             models.Assignment.lesson_id != None,
         )
         .all()
     )
-    for sub, asgn in submitted_subs:
-        # Verify the assignment's lesson belongs to this course
-        lesson = db.query(models.Lesson).join(models.Module).filter(
-            models.Lesson.id == asgn.lesson_id,
-            models.Module.course_id == course_id,
-        ).first()
-        if lesson:
-            submitted_assignment_lesson_ids.add(asgn.lesson_id)
+    submitted_assignment_lesson_ids = {s[0] for s in submitted_subs}
 
     # A lesson is "done for traversal" if it is fully completed OR is an assignment that was submitted
     traversal_done_ids = completed_lesson_ids | submitted_assignment_lesson_ids
 
     # Construct response with locking logic
     modules_data = []
-
     sorted_modules = sorted(course.modules, key=lambda m: m.order)
-
     previous_traversed = True  # First lesson is always unlocked
+    total_lessons_count = 0
 
     for module in sorted_modules:
         lessons_data = []
         sorted_lessons = sorted(module.lessons, key=lambda l: l.order)
+        total_lessons_count += len(sorted_lessons)
 
         for lesson in sorted_lessons:
             is_completed = lesson.id in completed_lesson_ids
             is_locked = not previous_traversed
 
-            # If already completed or submitted, never show as locked
             if lesson.id in traversal_done_ids:
                 is_locked = False
 
@@ -388,7 +402,6 @@ def get_course_content(
                 order=lesson.order
             ))
 
-            # Advance traversal gate: lesson unlocks the next one once done
             previous_traversed = lesson.id in traversal_done_ids
 
         modules_data.append(schemas.ModuleStatus(
@@ -398,12 +411,11 @@ def get_course_content(
             lessons=lessons_data
         ))
 
-        
-    # Fetch dynamic progression
-    prog = completion_engine.calculate_dynamic_progress(db, current_user.id, course_id)
-
-    # Trigger completion engine to check if a certificate should be generated
-    completion_engine.check_course_completion(db, current_user.id, course_id)
+    # In-memory progress calculation from eager-loaded structures (0 extra DB queries)
+    if total_lessons_count > 0:
+        prog = min(100, int((len(traversal_done_ids) / total_lessons_count) * 100))
+    else:
+        prog = 0
 
     # Fetch Certificate if it exists and is not revoked
     cert = db.query(models.Certificate).filter(
@@ -412,7 +424,7 @@ def get_course_content(
         models.Certificate.revoked_at == None
     ).first()
 
-    # Fetch profile picture from SVARP Admin API
+    # Fetch profile picture and verification readiness (cached)
     profile_picture_url = None
     verification_readiness = None
     user_data = utils.fetch_user_membership(current_user.email)

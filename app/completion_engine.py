@@ -1,40 +1,111 @@
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from . import models, schemas
 from .certificate_generator import generate_certificate_code
 from fastapi import HTTPException
+from typing import Dict, List, Set
 
-def calculate_dynamic_progress(db: Session, user_id: int, course_id: int) -> int:
-    """Calculates completion progress on the fly."""
-    total_lessons = db.query(models.Lesson).join(models.Module).filter(
-        models.Module.course_id == course_id
-    ).count()
+
+def calculate_dynamic_progress(db: Session, user_id: str, course_id: int) -> int:
+    """Calculates completion progress on the fly in minimal queries."""
+    total_lessons = (
+        db.query(func.count(models.Lesson.id))
+        .join(models.Module, models.Module.id == models.Lesson.module_id)
+        .filter(models.Module.course_id == course_id)
+        .scalar()
+        or 0
+    )
 
     if total_lessons == 0:
         return 0
 
-    completed_lessons_count = db.query(models.LessonCompletion).join(models.Lesson).join(models.Module).filter(
-        models.LessonCompletion.user_id == user_id,
-        models.Module.course_id == course_id
-    ).count()
-
-    print(f"[DEBUG] completed_lessons_count: {completed_lessons_count}")
-
-    # Add assignments that have been submitted but not yet approved (Submitted or Under Review)
-    submitted_assignment_lessons_count = db.query(models.Submission).join(models.Assignment).join(models.Lesson).join(models.Module).filter(
-        models.Submission.user_id == user_id,
-        models.Module.course_id == course_id,
-        models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW])
-    ).filter(
-        # Avoid double counting if already in LessonCompletion
-        ~models.Lesson.id.in_(
-            db.query(models.LessonCompletion.lesson_id).filter(models.LessonCompletion.user_id == user_id)
+    completed_ids: Set[int] = set(
+        x[0] for x in (
+            db.query(models.LessonCompletion.lesson_id)
+            .join(models.Lesson, models.Lesson.id == models.LessonCompletion.lesson_id)
+            .join(models.Module, models.Module.id == models.Lesson.module_id)
+            .filter(
+                models.LessonCompletion.user_id == str(user_id),
+                models.Module.course_id == course_id
+            )
+            .all()
         )
-    ).count()
+    )
 
-    print(f"[DEBUG] submitted_assignment_lessons_count: {submitted_assignment_lessons_count}")
-    print(f"[DEBUG] total_lessons: {total_lessons}")
+    submitted_ids: Set[int] = set(
+        x[0] for x in (
+            db.query(models.Assignment.lesson_id)
+            .join(models.Submission, models.Submission.assignment_id == models.Assignment.id)
+            .join(models.Lesson, models.Lesson.id == models.Assignment.lesson_id)
+            .join(models.Module, models.Module.id == models.Lesson.module_id)
+            .filter(
+                models.Submission.user_id == str(user_id),
+                models.Module.course_id == course_id,
+                models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW]),
+                models.Assignment.lesson_id != None
+            )
+            .all()
+        )
+    )
 
-    return int(((completed_lessons_count + submitted_assignment_lessons_count) / total_lessons) * 100)
+    done_count = len(completed_ids | submitted_ids)
+    return min(100, int((done_count / total_lessons) * 100))
+
+
+def calculate_dynamic_progress_batch(db: Session, user_id: str, course_ids: List[int]) -> Dict[int, int]:
+    """Calculates completion progress for multiple courses simultaneously in 3 bulk queries."""
+    if not course_ids:
+        return {}
+
+    # 1. Total lessons per course
+    total_counts = dict(
+        db.query(models.Module.course_id, func.count(models.Lesson.id))
+        .join(models.Lesson, models.Lesson.module_id == models.Module.id)
+        .filter(models.Module.course_id.in_(course_ids))
+        .group_by(models.Module.course_id)
+        .all()
+    )
+
+    # 2. Completed lessons per course
+    completed_rows = (
+        db.query(models.Module.course_id, models.LessonCompletion.lesson_id)
+        .join(models.Lesson, models.Lesson.id == models.LessonCompletion.lesson_id)
+        .join(models.Module, models.Module.id == models.Lesson.module_id)
+        .filter(
+            models.LessonCompletion.user_id == str(user_id),
+            models.Module.course_id.in_(course_ids)
+        )
+        .all()
+    )
+
+    # 3. Submitted assignment lessons per course
+    submitted_rows = (
+        db.query(models.Module.course_id, models.Assignment.lesson_id)
+        .join(models.Submission, models.Submission.assignment_id == models.Assignment.id)
+        .join(models.Lesson, models.Lesson.id == models.Assignment.lesson_id)
+        .join(models.Module, models.Module.id == models.Lesson.module_id)
+        .filter(
+            models.Submission.user_id == str(user_id),
+            models.Module.course_id.in_(course_ids),
+            models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW]),
+            models.Assignment.lesson_id != None
+        )
+        .all()
+    )
+
+    done_per_course: Dict[int, Set[int]] = {cid: set() for cid in course_ids}
+    for cid, lid in completed_rows:
+        done_per_course[cid].add(lid)
+    for cid, lid in submitted_rows:
+        done_per_course[cid].add(lid)
+
+    result: Dict[int, int] = {}
+    for cid in course_ids:
+        tot = total_counts.get(cid, 0)
+        done = len(done_per_course.get(cid, set()))
+        result[cid] = min(100, int((done / tot) * 100)) if tot > 0 else 0
+
+    return result
 
 def check_course_completion(db: Session, user_id: int, course_id: int):
     """

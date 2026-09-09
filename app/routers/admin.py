@@ -21,35 +21,18 @@ async def get_admin_stats(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_admin)
 ):
-    try:
-        portal_users = await user_portal_client.list_users(limit=500)
-        active_portal_ids = {str(pu.get("user_id")) for pu in portal_users}
-        
-        # Prune any local orphaned LMS users soft-deleted on central portal
-        orphans = db.query(models.User).filter(
-            models.User.role == "learner",
-            ~models.User.id.in_(active_portal_ids)
-        ).all()
-        for orphan in orphans:
-            db.query(models.Enrollment).filter(models.Enrollment.user_id == orphan.id).delete()
-            db.query(models.LessonCompletion).filter(models.LessonCompletion.user_id == orphan.id).delete()
-            db.query(models.Wishlist).filter(models.Wishlist.user_id == orphan.id).delete()
-            db.query(models.LessonComment).filter(models.LessonComment.user_id == orphan.id).delete()
-            db.delete(orphan)
-        if orphans:
-            db.commit()
-    except Exception:
-        pass
-
     total_users = db.query(models.User).filter(models.User.role == "learner").count()
     total_courses = db.query(models.Course).filter(models.Course.is_deleted == False).count()
     published_courses = db.query(models.Course).filter(models.Course.status == "published", models.Course.is_deleted == False).count()
     total_enrollments = db.query(models.Enrollment).count()
+    
     # Revenue: sum of amounts for successful payments
-    paid_payments = db.query(models.CoursePayment).filter(models.CoursePayment.status == models.CoursePaymentStatus.SUCCESS).all()
-    total_revenue = sum(p.amount for p in paid_payments)
-    recent_users = db.query(models.User).filter(models.User.role == "learner").order_by(models.User.id.desc()).limit(5).all()
+    paid_payments = db.query(models.CoursePayment.amount).filter(models.CoursePayment.status == models.CoursePaymentStatus.SUCCESS).all()
+    total_revenue = sum(p[0] for p in paid_payments)
+    
+    recent_users = db.query(models.User).filter(models.User.role == "learner").order_by(models.User.created_at.desc()).limit(5).all()
     recent_courses = db.query(models.Course).filter(models.Course.is_deleted == False).order_by(models.Course.id.desc()).limit(5).all()
+    
     return {
         "total_users": total_users,
         "total_courses": total_courses,
@@ -61,19 +44,26 @@ async def get_admin_stats(
     }
 
 
-
 @router.get("/payments", response_model=List[schemas.CoursePaymentAdmin])
 def get_all_payments(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_admin)
 ):
     payments = db.query(models.CoursePayment).order_by(models.CoursePayment.created_at.desc()).all()
-    
+    if not payments:
+        return []
+
+    user_ids = {p.user_id for p in payments if p.user_id}
+    course_ids = {p.course_id for p in payments if p.course_id}
+
+    users_map = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(user_ids)).all()} if user_ids else {}
+    courses_map = {c.id: c for c in db.query(models.Course).filter(models.Course.id.in_(course_ids)).all()} if course_ids else {}
+
     result = []
     for p in payments:
-        user = db.query(models.User).filter(models.User.id == p.user_id).first()
-        course = db.query(models.Course).filter(models.Course.id == p.course_id).first()
-        
+        user = users_map.get(p.user_id)
+        course = courses_map.get(p.course_id)
+
         result.append({
             "id": p.id,
             "user_id": p.user_id,
@@ -86,7 +76,7 @@ def get_all_payments(
             "status": p.status,
             "created_at": p.created_at
         })
-        
+
     return result
 
 def delete_physical_file(file_url: str):
@@ -327,7 +317,23 @@ async def read_users(
     except Exception:
         portal_users = []
 
+    if not portal_users:
+        # Fallback to local DB users
+        return db.query(models.User).offset(skip).limit(limit).all()
+
+    portal_user_ids = {str(pu.get("user_id")) for pu in portal_users if pu.get("user_id")}
+    portal_emails = {pu.get("email") for pu in portal_users if pu.get("email")}
+
+    existing_users = db.query(models.User).filter(
+        (models.User.id.in_(portal_user_ids)) | (models.User.email.in_(portal_emails))
+    ).all()
+
+    users_by_id = {u.id: u for u in existing_users}
+    users_by_email = {u.email: u for u in existing_users if u.email}
+
     result = []
+    has_changes = False
+
     for pu in portal_users:
         user_id = str(pu.get("user_id"))
         email = pu.get("email")
@@ -335,18 +341,16 @@ async def read_users(
         roles = pu.get("roles", [])
         primary_role = "admin" if "admin" in roles else "learner"
 
-        db_user = db.query(models.User).filter(models.User.id == user_id).first()
-        if not db_user and email:
-            db_user = db.query(models.User).filter(models.User.email == email).first()
+        db_user = users_by_id.get(user_id) or users_by_email.get(email)
 
         if db_user:
-            db_user.id = user_id
-            db_user.email = email
-            db_user.full_name = full_name
-            db_user.role = primary_role
-            db_user.is_active = True
-            db.commit()
-            db.refresh(db_user)
+            if (db_user.full_name != full_name or db_user.role != primary_role or not db_user.is_active):
+                db_user.id = user_id
+                db_user.email = email
+                db_user.full_name = full_name
+                db_user.role = primary_role
+                db_user.is_active = True
+                has_changes = True
         else:
             db_user = models.User(
                 id=user_id,
@@ -358,10 +362,12 @@ async def read_users(
                 hashed_password=""
             )
             db.add(db_user)
-            db.commit()
-            db.refresh(db_user)
+            has_changes = True
 
         result.append(db_user)
+
+    if has_changes:
+        db.commit()
 
     return result
 

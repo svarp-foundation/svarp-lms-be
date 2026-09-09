@@ -17,14 +17,20 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite:///"):
         os.makedirs(db_dir)
 
 # Build engine with appropriate args for each backend
-connect_args = {}
+engine_kwargs = {"pool_pre_ping": True}
+
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # PostgreSQL / MySQL connection pooling to remote database
+    engine_kwargs["pool_size"] = 20
+    engine_kwargs["max_overflow"] = 10
+    engine_kwargs["pool_recycle"] = 1800
+    engine_kwargs["pool_timeout"] = 30
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args=connect_args,
-    pool_pre_ping=True,
+    **engine_kwargs
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
