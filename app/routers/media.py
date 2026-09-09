@@ -182,11 +182,10 @@ async def get_secure_media(
                     signatory_name=signatory_name
                 )
                 media_type = "application/pdf"
-                disposition = "attachment" if download else "inline"
                 return Response(
                     content=content_bytes,
                     media_type=media_type,
-                    headers={"Content-Disposition": f'{disposition}; filename="{filename}"'}
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'}
                 )
         raise HTTPException(status_code=404, detail="Certificate not found")
 
