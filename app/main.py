@@ -9,9 +9,10 @@ import os
 
 from . import models, schemas, auth, database
 from .utils import STATIC_DIR, UPLOAD_DIR
-from .routers import admin, public, learner, media, auth as auth_router, course_payments, webhooks
+from .routers import admin, public, learner, media, auth as auth_router, course_payments, webhooks, instructor
 from .clients.user_portal_client import user_portal_client
 
+# Create tables if not existing
 models.Base.metadata.create_all(bind=database.engine)
 
 
@@ -33,9 +34,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # CORS Setup
-origins = [
-    "*"
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +47,7 @@ app.add_middleware(
 app.include_router(public.router)
 app.include_router(auth_router.router)
 app.include_router(learner.router)
+app.include_router(instructor.router)
 app.include_router(admin.router)
 app.include_router(media.router)
 app.include_router(course_payments.router)

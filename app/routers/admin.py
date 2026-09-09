@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime
 import shutil
 import os
 import uuid
@@ -339,9 +340,19 @@ async def read_users(
         email = pu.get("email")
         full_name = pu.get("full_name") or (email.split("@")[0].title() if email else "")
         roles = pu.get("roles", [])
-        primary_role = "admin" if "admin" in roles else "learner"
 
         db_user = users_by_id.get(user_id) or users_by_email.get(email)
+
+        if "admin" in roles:
+            primary_role = "admin"
+        elif "instructor" in roles or "teacher" in roles:
+            primary_role = "instructor"
+        elif "instructor_pending" in roles:
+            primary_role = "instructor_pending"
+        elif db_user and db_user.role in ["instructor", "instructor_pending", "admin"]:
+            primary_role = db_user.role
+        else:
+            primary_role = "learner"
 
         if db_user:
             if (db_user.full_name != full_name or db_user.role != primary_role or not db_user.is_active):
@@ -371,10 +382,86 @@ async def read_users(
 
     return result
 
+
+@router.put("/users/{user_id}/role")
+def update_user_role(
+    user_id: str,
+    role_data: schemas.UserRoleUpdate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.role = role_data.role
+    db.commit()
+    db.refresh(user)
+    return {"message": "User role updated successfully", "user_id": user.id, "role": user.role}
+
+
+@router.get("/instructor-applications")
+def get_instructor_applications(
+    status_filter: Optional[str] = None,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    query = db.query(models.InstructorApplication)
+    if status_filter:
+        query = query.filter(models.InstructorApplication.status == status_filter)
+
+    apps = query.order_by(models.InstructorApplication.applied_at.desc()).all()
+    results = []
+    for app in apps:
+        u = app.user
+        results.append({
+            "id": app.id,
+            "user_id": app.user_id,
+            "user_name": u.full_name if u else "Applicant",
+            "user_email": u.email if u else "N/A",
+            "specialty": app.specialty,
+            "bio": app.bio,
+            "status": app.status,
+            "applied_at": app.applied_at,
+            "reviewed_at": app.reviewed_at,
+            "admin_feedback": app.admin_feedback
+        })
+    return results
+
+
+@router.put("/instructor-applications/{app_id}/review")
+def review_instructor_application(
+    app_id: int,
+    review_data: schemas.InstructorApplicationReview,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    app = db.query(models.InstructorApplication).filter(models.InstructorApplication.id == app_id).first()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    app.status = review_data.status
+    app.admin_feedback = review_data.admin_feedback
+    app.reviewed_at = datetime.utcnow()
+    app.reviewed_by = str(current_user.id)
+
+    # If approved, update user's role to instructor
+    user = db.query(models.User).filter(models.User.id == app.user_id).first()
+    if user:
+        if review_data.status == "approved":
+            user.role = models.UserRole.INSTRUCTOR
+        elif review_data.status == "rejected" and user.role == models.UserRole.INSTRUCTOR_PENDING:
+            user.role = models.UserRole.LEARNER
+
+    db.commit()
+    return {"message": f"Instructor application {review_data.status}", "application_id": app.id, "status": app.status}
+
+
 # Admin Course Management
 @router.post("/courses", response_model=schemas.Course)
 def create_course(course: schemas.CourseCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_admin)):
-    db_course = models.Course(**course.dict(exclude={"discounted_price"}), status=models.CourseStatus.DRAFT, is_deleted=False)
+    course_data = course.dict(exclude={"discounted_price", "instructor_name"})
+    db_course = models.Course(**course_data, status=models.CourseStatus.DRAFT, is_deleted=False)
     db.add(db_course)
     db.commit()
     db.refresh(db_course)

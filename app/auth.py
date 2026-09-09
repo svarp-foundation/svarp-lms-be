@@ -104,7 +104,17 @@ async def get_current_user(
         roles = claims.get("roles", [])
         if not roles and claims.get("role"):
             roles = [claims.get("role")]
-        primary_role = "admin" if "admin" in roles else "learner"
+        
+        def _resolve_primary_role(r_list: list[str]) -> str:
+            if "admin" in r_list:
+                return "admin"
+            if "instructor" in r_list or "teacher" in r_list:
+                return "instructor"
+            if "instructor_pending" in r_list:
+                return "instructor_pending"
+            return "learner"
+
+        primary_role = _resolve_primary_role(roles)
 
         db_user = None
         if sub:
@@ -143,7 +153,7 @@ async def get_current_user(
             email = user_info.get("email") or email
             full_name = user_info.get("full_name") or (email.split("@")[0].title() if email else "Learner")
             roles = user_info.get("roles", roles)
-            primary_role = "admin" if "admin" in roles else "learner"
+            primary_role = _resolve_primary_role(roles)
             is_active = user_info.get("is_active", True)
         else:
             if not sub:
@@ -206,5 +216,12 @@ def require_admin(current_user: schemas.User = Depends(get_current_user)) -> sch
     return current_user
 
 
+def require_instructor(current_user: schemas.User = Depends(get_current_user)) -> schemas.User:
+    if current_user.role not in ["instructor", "admin"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Instructor or Admin access required")
+    return current_user
+
+
 def require_learner(current_user: schemas.User = Depends(get_current_user)) -> schemas.User:
     return current_user
+

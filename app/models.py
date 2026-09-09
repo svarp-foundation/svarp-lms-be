@@ -6,6 +6,8 @@ from .database import Base
 
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
+    INSTRUCTOR = "instructor"
+    INSTRUCTOR_PENDING = "instructor_pending"
     LEARNER = "learner"
 
 class User(Base):
@@ -46,8 +48,10 @@ class Course(Base):
     is_deleted = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=False)
     price = Column(Float, default=0.0)
+    instructor_id = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    instructor = relationship("User", foreign_keys=[instructor_id])
     modules = relationship("Module", back_populates="course", cascade="all, delete-orphan")
     enrollments = relationship("Enrollment", back_populates="course")
 
@@ -264,3 +268,25 @@ class LessonComment(Base):
 
     lesson = relationship("Lesson", back_populates="comments")
     user = relationship("User")
+
+class InstructorApplicationStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+class InstructorApplication(Base):
+    __tablename__ = "instructor_applications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), index=True)
+    specialty = Column(String, nullable=True)
+    bio = Column(Text, nullable=True)
+    status = Column(String, default=InstructorApplicationStatus.PENDING)
+    applied_at = Column(DateTime(timezone=True), server_default=func.now())
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String, ForeignKey("users.id"), nullable=True)
+    admin_feedback = Column(Text, nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
+

@@ -9,6 +9,9 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    role: Optional[str] = "learner"
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
 
 class User(UserBase):
     id: Union[int, str]
@@ -25,6 +28,7 @@ class Token(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str
+    user: Optional[User] = None
 
 class TokenRefresh(BaseModel):
     refresh_token: str
@@ -37,6 +41,7 @@ class CourseBase(BaseModel):
     title: str
     description: str
     thumbnail_url: Optional[str] = None
+    status: Optional[str] = "draft"
     passing_score: Optional[int] = 70
     require_all_lessons_completed: Optional[bool] = True
     require_assignment_approval: Optional[bool] = False
@@ -44,6 +49,8 @@ class CourseBase(BaseModel):
     is_paid: Optional[bool] = False
     price: Optional[float] = 0.0
     discounted_price: Optional[float] = None
+    instructor_id: Optional[str] = None
+    instructor_name: Optional[str] = None
 
 class CourseCreate(CourseBase):
     pass
@@ -60,6 +67,7 @@ class CourseUpdate(BaseModel):
     is_deleted: Optional[bool] = None
     is_paid: Optional[bool] = None
     price: Optional[float] = None
+    instructor_id: Optional[str] = None
 
 class Course(CourseBase):
     id: int
@@ -67,6 +75,7 @@ class Course(CourseBase):
     is_deleted: bool
     created_at: datetime
     class Config:
+        from_attributes = True
         orm_mode = True
 
 class EnrolledCourse(Course):
@@ -120,25 +129,6 @@ class CourseAdminDetail(Course):
     class Config:
         orm_mode = True
 
-class LessonCreate(BaseModel):
-    title: str
-    content: Optional[str] = None
-    video_url: Optional[str] = None
-    lesson_type: LessonType
-    order: int
-
-class LessonUpdate(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    video_url: Optional[str] = None
-    order: Optional[int] = None
-
-class ModuleCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-    order: int
-    lessons: List[LessonCreate] = []
-
 class QuestionOptionCreate(BaseModel):
     option_text: str
     is_correct: bool = False
@@ -159,8 +149,31 @@ class QuestionOptionAdmin(BaseModel):
 class QuestionCreate(BaseModel):
     question_text: str
     question_type: QuestionType = QuestionType.SUBJECTIVE
-    order: int = 1
+    order: Optional[int] = 1
     options: List[QuestionOptionCreate] = []  # Only for MCQ
+
+class LessonCreate(BaseModel):
+    title: str
+    content: Optional[str] = None
+    video_url: Optional[str] = None
+    lesson_type: LessonType = LessonType.TEXT
+    order: Optional[int] = 1
+    assignment_title: Optional[str] = None
+    assignment_description: Optional[str] = None
+    due_date: Optional[datetime] = None
+    questions: Optional[List[QuestionCreate]] = None
+
+class LessonUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    video_url: Optional[str] = None
+    order: Optional[int] = None
+
+class ModuleCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    order: int
+    lessons: List[LessonCreate] = []
 
 class QuestionOut(BaseModel):
     id: int
@@ -407,3 +420,42 @@ class AttemptOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+# ── Instructor Schemas ──────────────────────────────────────────────────────────
+
+class UserRoleUpdate(BaseModel):
+    role: str
+
+class InstructorApplicationCreate(BaseModel):
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
+
+class InstructorApplicationReview(BaseModel):
+    status: str  # approved, rejected
+    admin_feedback: Optional[str] = None
+
+class InstructorApplicationResponse(BaseModel):
+    id: int
+    user_id: str
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
+    status: str
+    applied_at: datetime
+    reviewed_at: Optional[datetime] = None
+    admin_feedback: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+        orm_mode = True
+
+class InstructorStats(BaseModel):
+    total_courses: int
+    published_courses: int
+    total_students: int
+    pending_reviews: int
+    certificates_issued: int
+    total_revenue: float
+    completion_rate: float
+
