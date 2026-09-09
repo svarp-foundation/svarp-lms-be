@@ -129,3 +129,46 @@ def is_active_member(membership_data: Optional[dict]) -> bool:
             return False
 
     return True
+
+
+# ── Async Membership Fetch (for async route handlers) ────────────────────────
+# Uses httpx.AsyncClient to avoid blocking the event loop when called
+# from async FastAPI handlers. Shares the same in-memory cache as the sync version.
+
+import httpx
+
+_async_http_client = httpx.AsyncClient(timeout=3.0)
+
+
+async def fetch_user_membership_async(email: str) -> Optional[dict]:
+    """
+    Async version of fetch_user_membership.
+    Uses httpx.AsyncClient so it doesn't block the event loop.
+    Shares the same in-memory cache as the sync version.
+    """
+    if not email:
+        return None
+
+    # Check cache first (same cache as sync version)
+    hit, cached_data = _membership_cache_get(email)
+    if hit:
+        return cached_data
+
+    # Cache miss — call external API asynchronously
+    try:
+        response = await _async_http_client.get(
+            f"{SVARP_VERIFY_URL}?email={email}",
+            headers={"X-API-Key": SVARP_ADMIN_API_KEY or ""},
+        )
+        if response.status_code == 200:
+            user_data = response.json()
+            if user_data:
+                _membership_cache_set(email, user_data)
+                return user_data
+    except Exception as e:
+        print(f"Error fetching membership (async) for {email}: {e}")
+
+    # Cache negative result too
+    _membership_cache_set(email, None)
+    return None
+

@@ -1,5 +1,12 @@
+"""
+Instructor Router — Thin HTTP handlers delegating to service layer.
+
+Business logic extracted to:
+- app.services.instructor_service (course listing, submission detail)
+- app.services.course_service (file parsing, curriculum CRUD, submission review)
+"""
+
 import os
-import re
 import shutil
 from datetime import datetime
 from typing import List, Optional
@@ -10,6 +17,7 @@ from sqlalchemy import func, distinct
 
 from .. import models, schemas, auth, database, completion_engine
 from ..utils import UPLOAD_DIR
+from ..services import instructor_service, course_service
 
 router = APIRouter(
     prefix="/instructor",
@@ -26,75 +34,6 @@ def _check_course_ownership(course: models.Course, current_user: schemas.User):
             detail="You do not have permission to manage this course."
         )
     return True
-
-
-def parse_course_file(content: str):
-    sections = re.split(r'---(COURSE|MODULE|LESSON|END_LESSON|ASSIGNMENT|QUESTION|END_ASSIGNMENT)---', content)
-    
-    course_data = {}
-    modules = []
-    current_module = None
-    current_lesson = None
-    current_assignment = None
-    
-    i = 1
-    while i < len(sections):
-        tag = sections[i]
-        body = sections[i+1].strip()
-        i += 2
-        
-        if tag == 'COURSE':
-            for line in body.split('\n'):
-                if ':' in line:
-                    key, val = line.split(':', 1)
-                    course_data[key.strip().lower().replace(' ', '_')] = val.strip()
-        elif tag == 'MODULE':
-            current_module = {'lessons': []}
-            for line in body.split('\n'):
-                if ':' in line:
-                    key, val = line.split(':', 1)
-                    current_module[key.strip().lower().replace(' ', '_')] = val.strip()
-            modules.append(current_module)
-        elif tag == 'LESSON':
-            if not current_module:
-                continue
-            current_lesson = {}
-            lines = body.split('\n')
-            for idx, line in enumerate(lines):
-                if ':' in line:
-                    key, val = line.split(':', 1)
-                    k = key.strip().lower().replace(' ', '_')
-                    if k == 'content':
-                        current_lesson['content'] = val.strip() + ("\n" + "\n".join(lines[idx+1:]) if idx+1 < len(lines) else "")
-                        break
-                    else:
-                        current_lesson[k] = val.strip()
-            current_module['lessons'].append(current_lesson)
-        elif tag == 'ASSIGNMENT':
-            if not current_lesson:
-                continue
-            current_assignment = {'questions': []}
-            for line in body.split('\n'):
-                if ':' in line:
-                    key, val = line.split(':', 1)
-                    current_assignment[key.strip().lower().replace(' ', '_')] = val.strip()
-            current_lesson['assignment_data'] = current_assignment
-        elif tag == 'QUESTION':
-            if not current_assignment:
-                continue
-            current_question = {'options': []}
-            for line in body.split('\n'):
-                if line.startswith('Option:'):
-                    opt_body = line[len('Option:'):].strip()
-                    is_correct = 'is_correct=true' in opt_body.lower()
-                    opt_text = re.sub(r'\(is_correct=(true|false)\)', '', opt_body, flags=re.IGNORECASE).strip()
-                    current_question['options'].append({'text': opt_text, 'is_correct': is_correct})
-                elif ':' in line:
-                    key, val = line.split(':', 1)
-                    current_question[key.strip().lower().replace(' ', '_')] = val.strip()
-            current_assignment['questions'].append(current_question)
-            
-    return course_data, modules
 
 
 # ── Dashboard & Analytics ───────────────────────────────────────────────────
@@ -125,7 +64,6 @@ def get_instructor_stats(
             completion_rate=0.0
         )
 
-    # Total distinct enrolled students in instructor's courses
     total_students = (
         db.query(func.count(distinct(models.Enrollment.user_id)))
         .filter(models.Enrollment.course_id.in_(course_ids))
@@ -133,20 +71,21 @@ def get_instructor_stats(
         or 0
     )
 
-    # Pending submissions
     pending_reviews = (
         db.query(func.count(models.Submission.id))
         .join(models.Assignment, models.Assignment.id == models.Submission.assignment_id)
         .join(models.Course, models.Course.id == models.Assignment.course_id)
         .filter(
             models.Course.id.in_(course_ids),
-            models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW])
+            models.Submission.status.in_([
+                models.SubmissionStatus.SUBMITTED,
+                models.SubmissionStatus.UNDER_REVIEW
+            ])
         )
         .scalar()
         or 0
     )
 
-    # Certificates issued
     certificates_issued = (
         db.query(func.count(models.Certificate.id))
         .filter(
@@ -157,7 +96,6 @@ def get_instructor_stats(
         or 0
     )
 
-    # Total revenue for instructor's courses
     total_revenue = (
         db.query(func.sum(models.CoursePayment.amount))
         .filter(
@@ -168,7 +106,6 @@ def get_instructor_stats(
         or 0.0
     )
 
-    # Completion rate
     total_enrollments = (
         db.query(func.count(models.Enrollment.id))
         .filter(models.Enrollment.course_id.in_(course_ids))
@@ -195,45 +132,11 @@ def list_instructor_courses(
     db: Session = Depends(database.get_db),
     current_user: schemas.User = Depends(auth.require_instructor)
 ):
-    query = db.query(models.Course).filter(models.Course.is_deleted == False)
-    if current_user.role != "admin":
-        query = query.filter(models.Course.instructor_id == str(current_user.id))
-
-    courses = query.order_by(models.Course.created_at.desc()).all()
-    results = []
-
-    for c in courses:
-        module_count = db.query(func.count(models.Module.id)).filter(models.Module.course_id == c.id).scalar() or 0
-        lesson_count = (
-            db.query(func.count(models.Lesson.id))
-            .join(models.Module, models.Module.id == models.Lesson.module_id)
-            .filter(models.Module.course_id == c.id)
-            .scalar()
-            or 0
-        )
-        student_count = db.query(func.count(models.Enrollment.id)).filter(models.Enrollment.course_id == c.id).scalar() or 0
-
-        results.append({
-            "id": c.id,
-            "title": c.title,
-            "description": c.description,
-            "thumbnail_url": c.thumbnail_url,
-            "status": c.status,
-            "is_paid": c.is_paid,
-            "price": c.price,
-            "passing_score": c.passing_score,
-            "require_all_lessons_completed": c.require_all_lessons_completed,
-            "require_assignment_approval": c.require_assignment_approval,
-            "require_final_assignment": c.require_final_assignment,
-            "instructor_id": c.instructor_id,
-            "instructor_name": c.instructor.full_name if c.instructor else None,
-            "created_at": c.created_at,
-            "module_count": module_count,
-            "lesson_count": lesson_count,
-            "student_count": student_count,
-        })
-
-    return results
+    return instructor_service.list_instructor_courses_with_counts(
+        db,
+        instructor_id=str(current_user.id),
+        is_admin=(current_user.role == "admin"),
+    )
 
 
 @router.post("/courses", response_model=schemas.Course)
@@ -246,11 +149,8 @@ def create_instructor_course(
     course_dict["instructor_id"] = str(current_user.id)
     if "status" not in course_dict or not course_dict["status"]:
         course_dict["status"] = models.CourseStatus.DRAFT
-    
-    db_course = models.Course(
-        **course_dict,
-        is_deleted=False
-    )
+
+    db_course = models.Course(**course_dict, is_deleted=False)
     db.add(db_course)
     db.commit()
     db.refresh(db_course)
@@ -273,11 +173,15 @@ def get_instructor_course_detail(
 
     _check_course_ownership(course, current_user)
 
-    modules = db.query(models.Module).filter(models.Module.course_id == course_id).order_by(models.Module.order).all()
+    modules = db.query(models.Module).filter(
+        models.Module.course_id == course_id
+    ).order_by(models.Module.order).all()
     modules_data = []
 
     for m in modules:
-        lessons = db.query(models.Lesson).filter(models.Lesson.module_id == m.id).order_by(models.Lesson.order).all()
+        lessons = db.query(models.Lesson).filter(
+            models.Lesson.module_id == m.id
+        ).order_by(models.Lesson.order).all()
         lessons_data = []
         for l in lessons:
             lesson_dict = {
@@ -298,7 +202,10 @@ def get_instructor_course_detail(
                         "question_text": q.question_text,
                         "question_type": q.question_type,
                         "order": q.order,
-                        "options": [{"id": o.id, "option_text": o.option_text, "is_correct": o.is_correct} for o in q.options]
+                        "options": [
+                            {"id": o.id, "option_text": o.option_text, "is_correct": o.is_correct}
+                            for o in q.options
+                        ]
                     })
                 lesson_dict["assignment"] = {
                     "id": l.assignment.id,
@@ -330,7 +237,11 @@ def get_instructor_course_detail(
         "is_paid": course.is_paid,
         "price": course.price,
         "instructor_id": course.instructor_id,
-        "instructor_name": course.instructor.full_name if course.instructor else None,
+        "instructor_name": (
+            course.instructor.full_name
+            if (course.instructor and course.instructor.full_name)
+            else "SVARP GLOBAL ACADEMY"
+        ),
         "created_at": course.created_at,
         "modules": modules_data
     }
@@ -368,104 +279,49 @@ def delete_instructor_course(
     db: Session = Depends(database.get_db),
     current_user: schemas.User = Depends(auth.require_instructor)
 ):
-    course = db.query(models.Course).filter(
-        models.Course.id == course_id,
-        models.Course.is_deleted == False
-    ).first()
-
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    _check_course_ownership(course, current_user)
-
-    course.is_deleted = True
-    db.commit()
-    return {"message": "Course deleted successfully"}
+    return course_service.delete_course_service(
+        db=db,
+        course_id=course_id,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        force=False
+    )
 
 
-@router.post("/courses/import-bundle")
-def import_course_bundle(
+@router.post("/courses/import-bundle", status_code=status.HTTP_201_CREATED)
+@router.post("/courses/bulk-create", status_code=status.HTTP_201_CREATED)
+async def import_course_bundle(
     file: UploadFile = File(...),
     db: Session = Depends(database.get_db),
     current_user: schemas.User = Depends(auth.require_instructor)
 ):
-    content = file.file.read().decode('utf-8')
-    course_data, modules_data = parse_course_file(content)
+    if not file.filename.endswith('.txt'):
+        raise HTTPException(status_code=400, detail="File must be a .txt file")
 
-    if not course_data or not course_data.get('title'):
-        raise HTTPException(status_code=400, detail="Invalid course file format. Missing COURSE title.")
+    content = await file.read()
+    decoded_content = content.decode('utf-8')
 
-    db_course = models.Course(
-        title=course_data.get('title', 'Imported Course'),
-        description=course_data.get('description', ''),
-        status=course_data.get('status', models.CourseStatus.DRAFT),
-        passing_score=int(course_data.get('passing_score', 70)),
-        is_paid=course_data.get('is_paid', 'false').lower() == 'true',
-        price=float(course_data.get('price', 0.0)),
-        instructor_id=str(current_user.id),
-        is_deleted=False
-    )
-    db.add(db_course)
-    db.commit()
-    db.refresh(db_course)
+    try:
+        parsed_course, modules_data = course_service.parse_course_file(decoded_content)
 
-    for mod_order, mod in enumerate(modules_data, 1):
-        db_module = models.Module(
-            course_id=db_course.id,
-            title=mod.get('title', f'Module {mod_order}'),
-            description=mod.get('description', ''),
-            order=mod_order
+        if not parsed_course or not parsed_course.get('title'):
+            raise HTTPException(status_code=400, detail="Invalid course file format. Missing COURSE title.")
+
+        db_course = course_service.create_course_from_parsed_data(
+            db, parsed_course, modules_data, instructor_id=str(current_user.id)
         )
-        db.add(db_module)
-        db.commit()
-        db.refresh(db_module)
 
-        for les_order, les in enumerate(mod.get('lessons', []), 1):
-            db_lesson = models.Lesson(
-                module_id=db_module.id,
-                title=les.get('title', f'Lesson {les_order}'),
-                content=les.get('content', ''),
-                video_url=les.get('video_url', ''),
-                lesson_type=les.get('lesson_type', models.LessonType.TEXT),
-                order=les_order
-            )
-            db.add(db_lesson)
-            db.commit()
-            db.refresh(db_lesson)
-
-            if les.get('assignment_data'):
-                asgn = les['assignment_data']
-                db_assignment = models.Assignment(
-                    course_id=db_course.id,
-                    lesson_id=db_lesson.id,
-                    title=asgn.get('title', f'Assignment {les_order}'),
-                    description=asgn.get('description', '')
-                )
-                db.add(db_assignment)
-                db.commit()
-                db.refresh(db_assignment)
-
-                for q_order, q in enumerate(asgn.get('questions', []), 1):
-                    db_question = models.Question(
-                        assignment_id=db_assignment.id,
-                        question_text=q.get('question_text', ''),
-                        question_type=q.get('question_type', models.QuestionType.SUBJECTIVE),
-                        order=q_order
-                    )
-                    db.add(db_question)
-                    db.commit()
-                    db.refresh(db_question)
-
-                    for opt in q.get('options', []):
-                        db_option = models.QuestionOption(
-                            question_id=db_question.id,
-                            option_text=opt.get('text', ''),
-                            is_correct=opt.get('is_correct', False)
-                        )
-                        db.add(db_option)
-                db.commit()
-
-    return {"message": "Course bundle imported successfully", "course_id": db_course.id}
+        return {
+            "message": "Course created successfully",
+            "course_id": db_course.id,
+            "title": db_course.title
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to parse or create course: {str(e)}")
 
 
 @router.post("/courses/{course_id}/update-from-file", status_code=status.HTTP_200_OK)
@@ -478,7 +334,10 @@ async def update_instructor_course_from_file(
     if not file.filename.endswith('.txt'):
         raise HTTPException(status_code=400, detail="File must be a .txt file")
 
-    db_course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
+    db_course = db.query(models.Course).filter(
+        models.Course.id == course_id,
+        models.Course.is_deleted == False
+    ).first()
     if not db_course:
         raise HTTPException(status_code=404, detail="Course not found or deleted")
     _check_course_ownership(db_course, current_user)
@@ -487,85 +346,14 @@ async def update_instructor_course_from_file(
     decoded_content = content.decode('utf-8')
 
     try:
-        course_data, modules_data = parse_course_file(decoded_content)
-        if not course_data:
+        parsed_course, modules_data = course_service.parse_course_file(decoded_content)
+        if not parsed_course:
             raise HTTPException(status_code=400, detail="Course data missing in file")
 
-        if 'title' in course_data:
-            db_course.title = course_data['title']
-        if 'description' in course_data:
-            db_course.description = course_data['description']
-        if 'price' in course_data:
-            db_course.price = float(course_data['price'])
-        if 'is_paid' in course_data:
-            db_course.is_paid = course_data['is_paid'].lower() == 'true'
+        course_service.update_course_curriculum_from_parsed_data(
+            db, course_id, parsed_course, modules_data
+        )
 
-        existing_modules = db.query(models.Module).filter(models.Module.course_id == course_id).all()
-        for m in existing_modules:
-            lessons = db.query(models.Lesson).filter(models.Lesson.module_id == m.id).all()
-            for l in lessons:
-                assignments = db.query(models.Assignment).filter(models.Assignment.lesson_id == l.id).all()
-                for a in assignments:
-                    questions = db.query(models.Question).filter(models.Question.assignment_id == a.id).all()
-                    for q in questions:
-                        db.query(models.QuestionOption).filter(models.QuestionOption.question_id == q.id).delete(synchronize_session=False)
-                        db.delete(q)
-                    db.delete(a)
-                db.delete(l)
-            db.delete(m)
-        db.flush()
-
-        for mod_order, mod in enumerate(modules_data, 1):
-            db_module = models.Module(
-                course_id=db_course.id,
-                title=mod.get('title', f'Module {mod_order}'),
-                description=mod.get('description', ''),
-                order=mod_order
-            )
-            db.add(db_module)
-            db.flush()
-
-            for les_order, les in enumerate(mod.get('lessons', []), 1):
-                db_lesson = models.Lesson(
-                    module_id=db_module.id,
-                    title=les.get('title', f'Lesson {les_order}'),
-                    content=les.get('content', ''),
-                    video_url=les.get('video_url', ''),
-                    lesson_type=les.get('lesson_type', models.LessonType.TEXT),
-                    order=les_order
-                )
-                db.add(db_lesson)
-                db.flush()
-
-                if les.get('assignment_data'):
-                    asgn = les['assignment_data']
-                    db_assignment = models.Assignment(
-                        course_id=db_course.id,
-                        lesson_id=db_lesson.id,
-                        title=asgn.get('title', f'Assignment {les_order}'),
-                        description=asgn.get('description', '')
-                    )
-                    db.add(db_assignment)
-                    db.flush()
-
-                    for q_order, q in enumerate(asgn.get('questions', []), 1):
-                        db_question = models.Question(
-                            assignment_id=db_assignment.id,
-                            question_text=q.get('question_text', ''),
-                            question_type=q.get('question_type', models.QuestionType.SUBJECTIVE),
-                            order=q_order
-                        )
-                        db.add(db_question)
-                        db.flush()
-
-                        for opt in q.get('options', []):
-                            db_option = models.QuestionOption(
-                                question_id=db_question.id,
-                                option_text=opt.get('text', ''),
-                                is_correct=opt.get('is_correct', False)
-                            )
-                            db.add(db_option)
-        db.commit()
         return {"message": "Course curriculum updated from file successfully"}
     except Exception as e:
         db.rollback()
@@ -591,7 +379,9 @@ def add_instructor_module(
 
     _check_course_ownership(course, current_user)
 
-    max_order = db.query(func.max(models.Module.order)).filter(models.Module.course_id == course_id).scalar() or 0
+    max_order = db.query(func.max(models.Module.order)).filter(
+        models.Module.course_id == course_id
+    ).scalar() or 0
 
     db_module = models.Module(
         course_id=course_id,
@@ -657,7 +447,9 @@ def add_instructor_lesson(
 
     _check_course_ownership(db_module.course, current_user)
 
-    max_order = db.query(func.max(models.Lesson.order)).filter(models.Lesson.module_id == module_id).scalar() or 0
+    max_order = db.query(func.max(models.Lesson.order)).filter(
+        models.Lesson.module_id == module_id
+    ).scalar() or 0
 
     db_lesson = models.Lesson(
         module_id=module_id,
@@ -746,10 +538,10 @@ def update_instructor_lesson(
             db_assignment.description = lesson_update.assignment_description or lesson_update.content or ""
             db_assignment.due_date = lesson_update.due_date
 
-        # If questions passed, update questions
         if lesson_update.questions is not None:
-            # Delete old questions
-            db.query(models.Question).filter(models.Question.assignment_id == db_assignment.id).delete()
+            db.query(models.Question).filter(
+                models.Question.assignment_id == db_assignment.id
+            ).delete()
             for q_order, q in enumerate(lesson_update.questions, 1):
                 db_question = models.Question(
                     assignment_id=db_assignment.id,
@@ -819,50 +611,17 @@ def list_instructor_submissions(
     db: Session = Depends(database.get_db),
     current_user: schemas.User = Depends(auth.require_instructor)
 ):
-    query = (
-        db.query(models.Submission)
-        .join(models.Assignment, models.Assignment.id == models.Submission.assignment_id)
-        .join(models.Course, models.Course.id == models.Assignment.course_id)
-        .filter(models.Course.is_deleted == False)
+    from ..services.admin_service import list_submissions_with_details
+
+    instructor_id = None if current_user.role == "admin" else str(current_user.id)
+    course_ids = [course_id] if course_id else None
+
+    return list_submissions_with_details(
+        db,
+        status_filter=status_filter,
+        course_ids=course_ids,
+        instructor_id=instructor_id,
     )
-
-    if current_user.role != "admin":
-        query = query.filter(models.Course.instructor_id == str(current_user.id))
-
-    if course_id:
-        query = query.filter(models.Course.id == course_id)
-
-    if status_filter:
-        query = query.filter(models.Submission.status == status_filter)
-
-    submissions = query.order_by(models.Submission.submitted_at.desc()).all()
-    results = []
-
-    for sub in submissions:
-        student = sub.student
-        assignment = sub.assignment
-        course = assignment.course if assignment else None
-
-        results.append({
-            "id": sub.id,
-            "student_id": sub.user_id,
-            "student_name": student.full_name if student else "Learner",
-            "student_email": student.email if student else "N/A",
-            "course_id": course.id if course else None,
-            "course_title": course.title if course else "Unknown Course",
-            "assignment_id": assignment.id if assignment else None,
-            "assignment_title": assignment.title if assignment else "Assignment",
-            "status": sub.status,
-            "submitted_at": sub.submitted_at,
-            "grade": sub.grade,
-            "feedback": sub.feedback,
-            "mcq_score": sub.mcq_score,
-            "mcq_total": sub.mcq_total,
-            "content": sub.content,
-            "file_url": sub.file_url,
-        })
-
-    return results
 
 
 @router.get("/submissions/{submission_id}")
@@ -871,48 +630,19 @@ def get_instructor_submission_detail(
     db: Session = Depends(database.get_db),
     current_user: schemas.User = Depends(auth.require_instructor)
 ):
-    sub = db.query(models.Submission).filter(models.Submission.id == submission_id).first()
-    if not sub:
+    detail = instructor_service.get_submission_detail(db, submission_id)
+    if not detail:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    course = sub.assignment.course if sub.assignment else None
-    if course:
-        _check_course_ownership(course, current_user)
+    # Ownership check
+    if detail.get("course_id") and current_user.role != "admin":
+        course = db.query(models.Course).filter(
+            models.Course.id == detail["course_id"]
+        ).first()
+        if course:
+            _check_course_ownership(course, current_user)
 
-    answers_data = []
-    for ans in sub.answers:
-        q = ans.question
-        selected_opt = ans.selected_option
-        answers_data.append({
-            "question_id": q.id if q else None,
-            "question_text": q.question_text if q else None,
-            "question_type": q.question_type if q else None,
-            "answer_text": ans.answer_text,
-            "selected_option_id": ans.selected_option_id,
-            "selected_option_text": selected_opt.option_text if selected_opt else None,
-            "is_correct": ans.is_correct
-        })
-
-    return {
-        "id": sub.id,
-        "student_id": sub.user_id,
-        "student_name": sub.student.full_name if sub.student else "Learner",
-        "student_email": sub.student.email if sub.student else "N/A",
-        "course_id": course.id if course else None,
-        "course_title": course.title if course else "Unknown Course",
-        "assignment_id": sub.assignment_id,
-        "assignment_title": sub.assignment.title if sub.assignment else "Assignment",
-        "assignment_description": sub.assignment.description if sub.assignment else "",
-        "status": sub.status,
-        "submitted_at": sub.submitted_at,
-        "grade": sub.grade,
-        "feedback": sub.feedback,
-        "mcq_score": sub.mcq_score,
-        "mcq_total": sub.mcq_total,
-        "content": sub.content,
-        "file_url": sub.file_url,
-        "answers": answers_data
-    }
+    return detail
 
 
 @router.put("/submissions/{submission_id}/review")
@@ -939,7 +669,7 @@ def review_instructor_submission(
     # If approved, check if learner completed all requirements to issue certificate
     if sub.status == models.SubmissionStatus.APPROVED and course:
         try:
-            completion_engine.check_and_issue_certificate(db, sub.user_id, course.id)
+            completion_engine.check_course_completion(db, sub.user_id, course.id)
         except Exception as e:
             print(f"[instructor_review] Certificate check warning: {e}")
 

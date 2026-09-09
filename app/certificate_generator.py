@@ -77,7 +77,16 @@ def draw_syllabus_page_template(c, width, height, course_title, cert_code, curre
     c.setLineWidth(1)
     c.line(60, height - 105, width - 60, height - 105)
 
-def generate_certificate_bytes(student_name: str, course_title: str, cert_code: str, profile_picture_url: str = None, frontend_url: str = DEFAULT_FRONTEND_URL, progress: int = 100, modules: list = None) -> bytes:
+def generate_certificate_bytes(
+    student_name: str,
+    course_title: str,
+    cert_code: str,
+    profile_picture_url: str = None,
+    frontend_url: str = DEFAULT_FRONTEND_URL,
+    progress: int = 100,
+    modules: list = None,
+    signatory_name: str = "Mr. Vikash Kumar"
+) -> bytes:
     """
     Generates a premium DESIGNER PDF certificate dynamically, matching the frontend's layout perfectly.
     Also appends subsequent pages with the course syllabus if modules list is provided.
@@ -149,15 +158,22 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     c.drawCentredString(width / 2.0, height / 2.0 + 50, student_name)
     
     # 6c. Profile Image (Circular)
-    try:
-        profile_url = profile_picture_url or "https://i.pravatar.cc/150?u=svarp_default"
-        response = requests.get(profile_url, timeout=2)
-        if response.status_code == 200:
-            profile_reader = ImageReader(BytesIO(response.content))
-        else:
-            raise Exception("Failed to fetch image")
-    except Exception:
-        profile_reader = None
+    profile_reader = None
+    if profile_picture_url:
+        try:
+            response = requests.get(profile_picture_url, timeout=1.5)
+            if response.status_code == 200:
+                profile_reader = ImageReader(BytesIO(response.content))
+        except Exception:
+            profile_reader = None
+
+    if not profile_reader:
+        local_logo_path = os.path.join(BASE_DIR, "app", "static", "svarp-logo.png")
+        if os.path.exists(local_logo_path):
+            try:
+                profile_reader = ImageReader(local_logo_path)
+            except Exception:
+                profile_reader = None
 
     img_y = height / 2.0 - 60
     img_size = 3.5 * cm
@@ -233,9 +249,10 @@ def generate_certificate_bytes(student_name: str, course_title: str, cert_code: 
     c.drawString(60, 45, f"DATE: {current_date}")
     
     # Signatory (Bottom Right)
+    signatory = signatory_name.strip() if (signatory_name and signatory_name.strip()) else "Mr. Vikash Kumar"
     c.setFillColor(colors.HexColor("#1f3b45"))
     c.setFont("Helvetica-BoldOblique", 24)
-    c.drawCentredString(width - 150, 70, "Mr. Vikash Kumar")
+    c.drawCentredString(width - 150, 70, signatory)
     
     c.setStrokeColor(colors.HexColor("#d1d5db")) # gray-300
     c.setLineWidth(0.5)

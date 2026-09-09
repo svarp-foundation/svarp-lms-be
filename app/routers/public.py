@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 import os
 import requests
@@ -14,7 +14,7 @@ router = APIRouter(
 @router.get("/featured-courses", response_model=List[schemas.Course])
 def read_featured_courses(db: Session = Depends(database.get_db)):
     """Returns 4 random published courses for the landing page."""
-    courses = db.query(models.Course).filter(
+    courses = db.query(models.Course).options(joinedload(models.Course.instructor)).filter(
         models.Course.status == models.CourseStatus.PUBLISHED,
         models.Course.is_deleted == False
     ).order_by(func.random()).limit(4).all()
@@ -30,7 +30,7 @@ def read_public_courses(
     db: Session = Depends(database.get_db),
     current_user: Optional[models.User] = Depends(auth.get_current_user_optional)
 ):
-    query = db.query(models.Course).filter(
+    query = db.query(models.Course).options(joinedload(models.Course.instructor)).filter(
         models.Course.status == models.CourseStatus.PUBLISHED,
         models.Course.is_deleted == False
     )
@@ -59,7 +59,7 @@ def read_public_course(
     db: Session = Depends(database.get_db),
     current_user: Optional[models.User] = Depends(auth.get_current_user_optional)
 ):
-    course = db.query(models.Course).filter(
+    course = db.query(models.Course).options(joinedload(models.Course.instructor)).filter(
         models.Course.id == course_id, 
         models.Course.status == models.CourseStatus.PUBLISHED,
         models.Course.is_deleted == False

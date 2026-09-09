@@ -3,6 +3,7 @@ from typing import Optional, Union
 import hashlib
 import time
 import logging
+import asyncio
 from jose import jwt, JWTError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -138,15 +139,42 @@ async def get_current_user(
             _cache_set(token, user_schema)
             return user_schema
 
-        # If user is not yet in local DB, fetch details from Central User Portal
+        # If sub and email are available in token claims, fast-sync to DB immediately
+        if sub and email:
+            user_id = str(sub)
+            full_name = claims.get("name") or claims.get("full_name") or (email.split("@")[0].title() if email else "Learner")
+            db_user = models.User(
+                id=user_id,
+                email=email,
+                full_name=full_name,
+                role=primary_role,
+                is_active=True,
+                is_suspended=False,
+                hashed_password=""
+            )
+            db.merge(db_user)
+            db.commit()
+
+            user_schema = schemas.User(
+                id=user_id,
+                email=email,
+                full_name=full_name,
+                role=primary_role,
+                is_suspended=False,
+                created_at=datetime.utcnow(),
+            )
+            _cache_set(token, user_schema)
+            return user_schema
+
+        # If claims are incomplete, fallback to Central User Portal with short timeout
         user_info = None
         try:
-            validation = await user_portal_client.validate_token(token)
+            validation = await asyncio.wait_for(user_portal_client.validate_token(token), timeout=2.0)
             if validation and validation.get("is_valid"):
                 user_id = str(validation.get("user_id"))
-                user_info = await user_portal_client.get_user(user_id=user_id)
+                user_info = await asyncio.wait_for(user_portal_client.get_user(user_id=user_id), timeout=2.0)
         except Exception as ex:
-            logger.warning(f"User Portal validation call failed: {ex}. Using JWT fallback.")
+            logger.warning(f"User Portal validation call failed/timed out: {ex}. Using JWT fallback.")
 
         if user_info:
             user_id = str(user_info.get("user_id") or user_info.get("id") or sub)

@@ -34,7 +34,7 @@ class TokenRefresh(BaseModel):
     refresh_token: str
 
 class TokenData(BaseModel):
-    user_id: Optional[int] = None
+    user_id: Optional[Union[int, str]] = None
     role: Optional[str] = None
 
 class CourseBase(BaseModel):
@@ -258,14 +258,14 @@ class SubmissionReview(BaseModel):
 
 class Certificate(BaseModel):
     id: int
-    user_id: int
+    user_id: Union[int, str]
     course_id: int
     issued_at: datetime
     certificate_code: str
     pdf_url: Optional[str] = None
     revoked_at: Optional[datetime] = None
     revoked_reason: Optional[str] = None
-    issued_by: Optional[int] = None
+    issued_by: Optional[Union[int, str]] = None
     verification_url: Optional[str] = None
     class Config:
         orm_mode = True
@@ -319,7 +319,7 @@ class AuditLogCreate(BaseModel):
 
 class AuditLog(AuditLogCreate):
     id: int
-    admin_id: int
+    admin_id: Union[int, str]
     timestamp: datetime
     class Config:
         orm_mode = True
@@ -353,7 +353,7 @@ class CouponValidateRequest(BaseModel):
 
 class CoursePaymentAdmin(BaseModel):
     id: int
-    user_id: int
+    user_id: Union[int, str]
     user_email: str
     course_id: int
     course_title: str
@@ -385,7 +385,7 @@ class UserCertificate(BaseModel):
 # ── Lesson Discussion/Comments Schemas ──────────────────────────────────────────
 
 class UserMini(BaseModel):
-    id: int
+    id: Union[int, str]
     full_name: str
     email: str
     role: str
@@ -399,7 +399,7 @@ class LessonCommentCreate(BaseModel):
 class LessonCommentOut(BaseModel):
     id: int
     lesson_id: int
-    user_id: int
+    user_id: Union[int, str]
     content: str
     created_at: datetime
     user: UserMini
@@ -431,8 +431,10 @@ class InstructorApplicationCreate(BaseModel):
     bio: Optional[str] = None
 
 class InstructorApplicationReview(BaseModel):
-    status: str  # approved, rejected
+    status: Optional[str] = None  # approved, rejected
+    action: Optional[str] = None  # alias for status
     admin_feedback: Optional[str] = None
+    feedback: Optional[str] = None  # alias for admin_feedback
 
 class InstructorApplicationResponse(BaseModel):
     id: int

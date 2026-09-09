@@ -55,6 +55,10 @@ class Course(Base):
     modules = relationship("Module", back_populates="course", cascade="all, delete-orphan")
     enrollments = relationship("Enrollment", back_populates="course")
 
+    @property
+    def instructor_name(self):
+        return self.instructor.full_name if (self.instructor and self.instructor.full_name) else "SVARP GLOBAL ACADEMY"
+
 class Module(Base):
     __tablename__ = "modules"
 

@@ -35,6 +35,7 @@ def read_my_courses(db: Session = Depends(database.get_db), current_user: models
     for enr in enrollments:
         prog = progress_map.get(enr.course_id, 0)
         course_data = {c.name: getattr(enr.course, c.name) for c in enr.course.__table__.columns}
+        course_data["instructor_name"] = enr.course.instructor_name
         courses_with_progress.append(schemas.EnrolledCourse(**course_data, progress=prog))
     return courses_with_progress
 
@@ -535,6 +536,79 @@ def get_user_certificates(
             pdf_url=cert.pdf_url
         ))
     return result
+
+@router.post("/courses/{course_id}/claim-certificate")
+def claim_course_certificate(
+    course_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Claim or fetch certificate for a completed course."""
+    cert = db.query(models.Certificate).filter(
+        models.Certificate.user_id == current_user.id,
+        models.Certificate.course_id == course_id,
+        models.Certificate.revoked_at == None
+    ).first()
+
+    if not cert:
+        progress = completion_engine.calculate_dynamic_progress(db, current_user.id, course_id)
+        if progress < 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Course curriculum must be 100% completed to claim your certificate."
+            )
+
+        cert = completion_engine.check_course_completion(db, current_user.id, course_id)
+        if not cert:
+            from ..certificate_generator import generate_certificate_code
+            code = generate_certificate_code()
+            cert = models.Certificate(
+                user_id=current_user.id,
+                course_id=course_id,
+                certificate_code=code,
+                pdf_url=f"/media/{code}.pdf"
+            )
+            db.add(cert)
+            db.commit()
+            db.refresh(cert)
+
+    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    return {
+        "id": cert.id,
+        "certificate_code": cert.certificate_code,
+        "course_id": cert.course_id,
+        "course_title": course.title if course else "Course",
+        "student_name": current_user.full_name,
+        "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
+        "pdf_url": cert.pdf_url,
+    }
+
+@router.get("/courses/{course_id}/certificate")
+def get_course_certificate(
+    course_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_learner)
+):
+    """Get certificate details for a specific course."""
+    cert = db.query(models.Certificate).filter(
+        models.Certificate.user_id == current_user.id,
+        models.Certificate.course_id == course_id,
+        models.Certificate.revoked_at == None
+    ).first()
+
+    if not cert:
+        raise HTTPException(status_code=404, detail="No certificate found for this course")
+
+    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    return {
+        "id": cert.id,
+        "certificate_code": cert.certificate_code,
+        "course_id": cert.course_id,
+        "course_title": course.title if course else "Course",
+        "student_name": current_user.full_name,
+        "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
+        "pdf_url": cert.pdf_url,
+    }
 
 # ── Lesson Discussion/Comments Endpoints ─────────────────────────────────────
 

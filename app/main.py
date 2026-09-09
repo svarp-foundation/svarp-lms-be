@@ -1,3 +1,6 @@
+import logging
+import sys
+
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +14,15 @@ from . import models, schemas, auth, database
 from .utils import STATIC_DIR, UPLOAD_DIR
 from .routers import admin, public, learner, media, auth as auth_router, course_payments, webhooks, instructor
 from .clients.user_portal_client import user_portal_client
+from .middleware.timing_middleware import TimingMiddleware
+
+# ── Structured Logging Configuration ─────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 
 # Create tables if not existing
 models.Base.metadata.create_all(bind=database.engine)
@@ -26,12 +38,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SVARP GLOBAL ACADEMY API", lifespan=lifespan)
 
+# ── Middleware (order matters: last added = first executed) ───────────────────
+
 # Ensure static/uploads directory exists
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Mount static files handler
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
 
 # CORS Setup
 origins = ["*"]
@@ -43,6 +56,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API Timing Middleware — logs every request with response time
+app.add_middleware(TimingMiddleware)
 
 app.include_router(public.router)
 app.include_router(auth_router.router)

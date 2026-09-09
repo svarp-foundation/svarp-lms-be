@@ -178,41 +178,26 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
         return None
 
 
-    # Check profile verification before generating certificate
-    import os
-    import requests
-    SVARP_ADMIN_API_KEY = os.getenv("SVARP_ADMIN_API_KEY")
-    SVARP_ADMIN_BASE_URL = (os.getenv("SVARP_ADMIN_BASE_URL") or "").rstrip("/")
-    SVARP_VERIFY_URL = f"{SVARP_ADMIN_BASE_URL}/admin/verify-user"
-    
-    try:
-        verify_response = requests.get(
-            f"{SVARP_VERIFY_URL}?email={user.email}",
-            headers={"X-API-Key": SVARP_ADMIN_API_KEY},
-            timeout=5
-        )
-        if verify_response.status_code == 200:
-            verification_data = verify_response.json()
-            readiness = verification_data.get("payment_readiness") or {}
-            if not readiness.get("ready"):
-                print(f"[completion_engine] Profile not ready for certificate: {user.email}")
-                return None
-        else:
-            print(f"[completion_engine] Verification system returned status {verify_response.status_code} for {user.email}")
+    # Check profile verification if SVARP membership is connected
+    from . import utils
+
+    user_data = utils.fetch_user_membership(user.email)
+    if user_data:
+        readiness = user_data.get("payment_readiness")
+        if isinstance(readiness, dict) and readiness.get("ready") is False:
+            print(f"[completion_engine] Profile explicitly not ready for certificate: {user.email}")
             return None
-    except Exception as e:
-        print(f"[completion_engine] Verification system error: {e}")
-        return None
     
     from .certificate_generator import generate_certificate_code
     cert_code = generate_certificate_code()
     
     new_cert = models.Certificate(
-        user_id=user_id,
+        user_id=user.id,
         course_id=course_id,
         certificate_code=cert_code,
         pdf_url=f"/media/{cert_code}.pdf"
     )
     db.add(new_cert)
     db.commit()
+    db.refresh(new_cert)
     return new_cert
