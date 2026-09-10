@@ -17,14 +17,17 @@ def list_instructor_courses_with_counts(
     db: Session,
     instructor_id: str = None,
     is_admin: bool = False,
+    include_deleted: bool = False,
 ) -> list:
     """
-    List instructor courses with module/lesson/student counts.
+    List instructor/admin courses with module/lesson/student counts.
     
     Previous: 3 COUNT queries per course (N+1).
     Now: 3 grouped queries + dictionary lookup (constant regardless of course count).
     """
-    query = db.query(models.Course).filter(models.Course.is_deleted == False)
+    query = db.query(models.Course)
+    if not include_deleted:
+        query = query.filter(models.Course.is_deleted == False)
     if not is_admin:
         query = query.filter(models.Course.instructor_id == str(instructor_id))
 
@@ -69,6 +72,9 @@ def list_instructor_courses_with_counts(
 
     results = []
     for c in courses:
+        m_cnt = module_counts.get(c.id, 0)
+        l_cnt = lesson_counts.get(c.id, 0)
+        s_cnt = student_counts.get(c.id, 0)
         results.append({
             "id": c.id,
             "title": c.title,
@@ -81,12 +87,17 @@ def list_instructor_courses_with_counts(
             "require_all_lessons_completed": c.require_all_lessons_completed,
             "require_assignment_approval": c.require_assignment_approval,
             "require_final_assignment": c.require_final_assignment,
+            "is_deleted": c.is_deleted,
             "instructor_id": c.instructor_id,
             "instructor_name": instructor_map.get(c.instructor_id) or "SVARP GLOBAL ACADEMY",
             "created_at": c.created_at,
-            "module_count": module_counts.get(c.id, 0),
-            "lesson_count": lesson_counts.get(c.id, 0),
-            "student_count": student_counts.get(c.id, 0),
+            "module_count": m_cnt,
+            "modules_count": m_cnt,
+            "lesson_count": l_cnt,
+            "lessons_count": l_cnt,
+            "student_count": s_cnt,
+            "students_count": s_cnt,
+            "enrolled_count": s_cnt,
         })
 
     return results

@@ -363,14 +363,18 @@ async def update_instructor_course_from_file(
 
     try:
         parsed_course, modules_data = course_service.parse_course_file(decoded_content)
-        if not parsed_course:
-            raise HTTPException(status_code=400, detail="Course data missing in file")
+        if not parsed_course and not modules_data:
+            raise HTTPException(status_code=400, detail="No valid course or module data found in file")
 
-        course_service.update_course_curriculum_from_parsed_data(
+        updated_course = course_service.update_course_curriculum_from_parsed_data(
             db, course_id, parsed_course, modules_data
         )
 
-        return {"message": "Course curriculum updated from file successfully"}
+        return {
+            "message": f"Course '{updated_course.title}' updated successfully from file",
+            "course_id": updated_course.id,
+            "title": updated_course.title
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Failed to update course from file: {str(e)}")

@@ -74,6 +74,13 @@ class Course(CourseBase):
     status: str
     is_deleted: bool
     created_at: datetime
+    module_count: Optional[int] = 0
+    modules_count: Optional[int] = 0
+    lesson_count: Optional[int] = 0
+    lessons_count: Optional[int] = 0
+    student_count: Optional[int] = 0
+    students_count: Optional[int] = 0
+    enrolled_count: Optional[int] = 0
     class Config:
         from_attributes = True
         orm_mode = True

@@ -20,7 +20,7 @@ import io
 from app.clients.user_portal_client import user_portal_client, ServiceError
 from .. import models, schemas, database, auth, completion_engine
 from ..utils import UPLOAD_DIR
-from ..services import admin_service, course_service
+from ..services import admin_service, course_service, instructor_service
 
 router = APIRouter(
     prefix="/admin",
@@ -571,8 +571,8 @@ async def update_course_from_file(
 
     try:
         parsed_course, modules_data = course_service.parse_course_file(decoded_content)
-        if not parsed_course:
-            raise HTTPException(status_code=400, detail="Course data missing in file")
+        if not parsed_course and not modules_data:
+            raise HTTPException(status_code=400, detail="No valid course or module data found in file")
 
         updated_course = course_service.update_course_curriculum_from_parsed_data(
             db, course_id, parsed_course, modules_data
@@ -651,10 +651,11 @@ def read_all_courses(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_admin)
 ):
-    query = db.query(models.Course).options(joinedload(models.Course.instructor))
-    if not include_deleted:
-        query = query.filter(models.Course.is_deleted == False)
-    return query.order_by(models.Course.created_at.desc()).offset(skip).limit(limit).all()
+    return instructor_service.list_instructor_courses_with_counts(
+        db,
+        is_admin=True,
+        include_deleted=include_deleted,
+    )
 
 
 @router.get("/courses/{course_id}", response_model=schemas.CourseAdminDetail)

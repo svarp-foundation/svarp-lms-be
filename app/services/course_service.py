@@ -205,20 +205,28 @@ def update_course_curriculum_from_parsed_data(
     if not db_course:
         return None
 
-    # Update metadata
-    if 'title' in course_data:
+    # Update metadata if present in file
+    if course_data.get('title'):
         db_course.title = course_data['title']
-    if 'description' in course_data:
+    if course_data.get('description'):
         db_course.description = course_data['description']
     if 'price' in course_data:
-        db_course.price = float(course_data['price'])
+        try:
+            db_course.price = float(course_data['price'])
+        except (ValueError, TypeError):
+            pass
     if 'is_paid' in course_data:
-        db_course.is_paid = course_data['is_paid'].lower() == 'true'
+        db_course.is_paid = str(course_data['is_paid']).lower() == 'true'
+    if 'passing_score' in course_data:
+        try:
+            db_course.passing_score = int(course_data['passing_score'])
+        except (ValueError, TypeError):
+            pass
 
-    # Delete existing curriculum
-    _purge_course_curriculum_and_media(db, course_id)
+    # Delete existing curriculum (preserving course wishlists)
+    _purge_course_curriculum_and_media(db, course_id, purge_wishlists=False)
 
-    # Rebuild from file
+    # Rebuild curriculum from file
     _build_curriculum(db, course_id, modules_data)
 
     db.commit()
@@ -226,10 +234,10 @@ def update_course_curriculum_from_parsed_data(
     return db_course
 
 
-def _purge_course_curriculum_and_media(db: Session, course_id: int):
+def _purge_course_curriculum_and_media(db: Session, course_id: int, purge_wishlists: bool = False):
     """
     Safely purges all child curriculum, assignments, submissions, questions,
-    options, completions, comments, wishlists, and unlinks media files in strict
+    options, completions, comments, and unlinks media files in strict
     foreign key dependency order.
     """
     # 1. Collect all assignments (both course-level and lesson-level)
@@ -319,10 +327,11 @@ def _purge_course_curriculum_and_media(db: Session, course_id: int):
         models.Module.course_id == course_id
     ).delete(synchronize_session=False)
 
-    # Delete wishlists
-    db.query(models.Wishlist).filter(
-        models.Wishlist.course_id == course_id
-    ).delete(synchronize_session=False)
+    # Delete wishlists if explicitly requested (e.g. on hard delete)
+    if purge_wishlists:
+        db.query(models.Wishlist).filter(
+            models.Wishlist.course_id == course_id
+        ).delete(synchronize_session=False)
 
     db.flush()
 
@@ -574,7 +583,7 @@ def delete_course_service(
             delete_physical_file(course.thumbnail_url)
 
         # 2. Clean up curriculum hierarchy, assignments, questions, and files in strict FK order
-        _purge_course_curriculum_and_media(db, course_id)
+        _purge_course_curriculum_and_media(db, course_id, purge_wishlists=True)
 
         # 3. Remove course entity
         db.delete(course)
@@ -629,7 +638,7 @@ def delete_course_service(
         delete_physical_file(course.thumbnail_url)
 
     # 4. Clean up all curriculum, assignments, submissions, questions, options, comments, completions, wishlists
-    _purge_course_curriculum_and_media(db, course_id)
+    _purge_course_curriculum_and_media(db, course_id, purge_wishlists=True)
 
     # 5. Create Audit Log before deleting course entity
     log = models.AuditLog(
