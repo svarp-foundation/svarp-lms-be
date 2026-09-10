@@ -11,7 +11,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, distinct, desc, extract, case, and_
+from sqlalchemy import func, distinct, desc, extract, case, and_, or_
 from typing import Optional
 
 from .. import models
@@ -550,6 +550,7 @@ def get_admin_analytics(db: Session, force_refresh: bool = False) -> dict:
         },
         "course_analytics": course_analytics,
         "instructor_analytics": instructor_analytics,
+        "learners_analytics": get_all_learners_analytics(db),
         "engagement": {
             "top_enrolled_courses": top_enrolled_courses,
             "top_revenue_courses": top_revenue_courses,
@@ -562,7 +563,551 @@ def get_admin_analytics(db: Session, force_refresh: bool = False) -> dict:
     return result
 
 
-# ── Optimized Submissions List ───────────────────────────────────────────────
+# ── All Learners Overview Analytics (Batch Aggregated) ───────────────────────
+
+def get_all_learners_analytics(db: Session) -> list:
+    """
+    Get all learners with aggregated enrollment count, certificates earned, 
+    lessons completed, submissions, and avg grade using batch grouped queries.
+    """
+    learners = db.query(models.User).filter(
+        models.User.role.in_([models.UserRole.LEARNER, "learner"])
+    ).order_by(models.User.created_at.desc()).all()
+
+    if not learners:
+        return []
+
+    user_ids = [u.id for u in learners]
+
+    # Batch 1: Enrollment counts per learner
+    enrollment_counts = dict(
+        db.query(models.Enrollment.user_id, func.count(models.Enrollment.id))
+        .filter(models.Enrollment.user_id.in_(user_ids))
+        .group_by(models.Enrollment.user_id)
+        .all()
+    )
+
+    # Batch 2: Certificate counts per learner
+    certificate_counts = dict(
+        db.query(models.Certificate.user_id, func.count(models.Certificate.id))
+        .filter(
+            models.Certificate.user_id.in_(user_ids),
+            models.Certificate.revoked_at.is_(None)
+        )
+        .group_by(models.Certificate.user_id)
+        .all()
+    )
+
+    # Batch 3: Lesson completion counts per learner
+    lesson_comp_counts = dict(
+        db.query(models.LessonCompletion.user_id, func.count(distinct(models.LessonCompletion.lesson_id)))
+        .filter(models.LessonCompletion.user_id.in_(user_ids))
+        .group_by(models.LessonCompletion.user_id)
+        .all()
+    )
+
+    # Batch 4: Submissions count and average grade per learner
+    sub_stats = db.query(
+        models.Submission.user_id,
+        func.count(models.Submission.id).label("sub_count"),
+        func.avg(models.Submission.grade).label("avg_grade")
+    ).filter(
+        models.Submission.user_id.in_(user_ids)
+    ).group_by(models.Submission.user_id).all()
+
+    sub_counts = {r[0]: r[1] for r in sub_stats}
+    avg_grades = {r[0]: round(float(r[2]), 1) if r[2] is not None else None for r in sub_stats}
+
+    result = []
+    for u in learners:
+        enr_cnt = enrollment_counts.get(u.id, 0)
+        cert_cnt = certificate_counts.get(u.id, 0)
+        comp_lessons = lesson_comp_counts.get(u.id, 0)
+        sub_cnt = sub_counts.get(u.id, 0)
+        avg_g = avg_grades.get(u.id)
+
+        result.append({
+            "user_id": u.id,
+            "full_name": u.full_name or "Learner",
+            "email": u.email,
+            "role": u.role,
+            "is_active": u.is_active,
+            "is_suspended": u.is_suspended,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+            "enrolled_courses_count": enr_cnt,
+            "certificates_count": cert_cnt,
+            "completed_lessons_count": comp_lessons,
+            "submissions_count": sub_cnt,
+            "average_grade": avg_g
+        })
+
+    return result
+
+
+# ── Course-Level Learners Analytics Drill-Down ───────────────────────────────
+
+def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]:
+    """
+    Get detailed analytics for a particular course including all enrolled learners,
+    dynamic progress %, completed lessons count, submission scores, certificate status,
+    and payment info. Zero N+1 queries.
+    """
+    course = db.query(models.Course).options(
+        joinedload(models.Course.instructor)
+    ).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
+
+    if not course:
+        return None
+
+    # Total modules and lessons in this course
+    total_modules = db.query(func.count(models.Module.id)).filter(models.Module.course_id == course_id).scalar() or 0
+    total_lessons = (
+        db.query(func.count(models.Lesson.id))
+        .join(models.Module, models.Module.id == models.Lesson.module_id)
+        .filter(models.Module.course_id == course_id)
+        .scalar() or 0
+    )
+
+    # Fetch all enrollments for this course
+    enrollments = (
+        db.query(models.Enrollment)
+        .options(joinedload(models.Enrollment.user))
+        .filter(models.Enrollment.course_id == course_id)
+        .order_by(models.Enrollment.enrolled_at.desc())
+        .all()
+    )
+
+    user_ids = [e.user_id for e in enrollments if e.user_id]
+
+    user_done_lessons = defaultdict(set)
+    user_last_activity = {}
+    cert_map = {}
+    user_submissions_stat = {}
+    pay_map = {}
+
+    if user_ids:
+        # Batch 1: Completed lesson IDs per user
+        comp_rows = (
+            db.query(models.LessonCompletion.user_id, models.LessonCompletion.lesson_id, models.LessonCompletion.completed_at)
+            .join(models.Lesson, models.Lesson.id == models.LessonCompletion.lesson_id)
+            .join(models.Module, models.Module.id == models.Lesson.module_id)
+            .filter(models.LessonCompletion.user_id.in_(user_ids), models.Module.course_id == course_id)
+            .all()
+        )
+        for uid, lid, comp_at in comp_rows:
+            user_done_lessons[uid].add(lid)
+            if comp_at:
+                if uid not in user_last_activity or comp_at > user_last_activity[uid]:
+                    user_last_activity[uid] = comp_at
+
+        # Batch 2: Submitted assignment lesson IDs per user
+        sub_asgn_rows = (
+            db.query(models.Submission.user_id, models.Assignment.lesson_id, models.Submission.submitted_at)
+            .join(models.Assignment, models.Submission.assignment_id == models.Assignment.id)
+            .join(models.Lesson, models.Lesson.id == models.Assignment.lesson_id)
+            .join(models.Module, models.Module.id == models.Lesson.module_id)
+            .filter(
+                models.Submission.user_id.in_(user_ids),
+                models.Module.course_id == course_id,
+                models.Submission.status.in_([
+                    models.SubmissionStatus.SUBMITTED,
+                    models.SubmissionStatus.UNDER_REVIEW,
+                    models.SubmissionStatus.APPROVED
+                ]),
+                models.Assignment.lesson_id != None
+            )
+            .all()
+        )
+        for uid, lid, sub_at in sub_asgn_rows:
+            user_done_lessons[uid].add(lid)
+            if sub_at:
+                if uid not in user_last_activity or sub_at > user_last_activity[uid]:
+                    user_last_activity[uid] = sub_at
+
+        # Batch 3: Certificates for this course
+        certs = (
+            db.query(models.Certificate)
+            .filter(
+                models.Certificate.course_id == course_id,
+                models.Certificate.user_id.in_(user_ids),
+                models.Certificate.revoked_at.is_(None)
+            )
+            .all()
+        )
+        cert_map = {c.user_id: c for c in certs}
+
+        # Batch 4: Submissions and average grades in this course
+        course_assignments = (
+            db.query(models.Assignment.id)
+            .outerjoin(models.Lesson, models.Assignment.lesson_id == models.Lesson.id)
+            .outerjoin(models.Module, models.Lesson.module_id == models.Module.id)
+            .filter(
+                or_(
+                    models.Assignment.course_id == course_id,
+                    models.Module.course_id == course_id
+                )
+            )
+            .all()
+        )
+        assignment_ids = [a[0] for a in course_assignments]
+
+        if assignment_ids:
+            sub_stat_rows = (
+                db.query(
+                    models.Submission.user_id,
+                    func.count(models.Submission.id),
+                    func.avg(models.Submission.grade),
+                    func.max(models.Submission.submitted_at)
+                )
+                .filter(
+                    models.Submission.user_id.in_(user_ids),
+                    models.Submission.assignment_id.in_(assignment_ids)
+                )
+                .group_by(models.Submission.user_id)
+                .all()
+            )
+            for uid, cnt, avg_g, max_at in sub_stat_rows:
+                user_submissions_stat[uid] = {
+                    "count": cnt,
+                    "avg_grade": round(float(avg_g), 1) if avg_g is not None else None
+                }
+                if max_at:
+                    if uid not in user_last_activity or max_at > user_last_activity[uid]:
+                        user_last_activity[uid] = max_at
+
+        # Batch 5: Payments for this course
+        payments = (
+            db.query(models.CoursePayment)
+            .filter(
+                models.CoursePayment.course_id == course_id,
+                models.CoursePayment.user_id.in_(user_ids),
+                models.CoursePayment.status == models.CoursePaymentStatus.SUCCESS
+            )
+            .all()
+        )
+        pay_map = {p.user_id: p for p in payments}
+
+    learners_list = []
+    completed_count = 0
+    in_progress_count = 0
+    not_started_count = 0
+    total_progress_sum = 0
+
+    for e in enrollments:
+        u = e.user
+        uid = e.user_id
+        done_set = user_done_lessons.get(uid, set())
+        done_count = len(done_set)
+        progress_pct = min(100, int((done_count / total_lessons) * 100)) if total_lessons > 0 else 0
+        cert = cert_map.get(uid)
+
+        # If certificate earned, treat as 100% completed
+        if cert and progress_pct < 100:
+            progress_pct = 100
+
+        if progress_pct == 100 or cert:
+            progress_status = "completed"
+            completed_count += 1
+        elif progress_pct > 0:
+            progress_status = "in_progress"
+            in_progress_count += 1
+        else:
+            progress_status = "not_started"
+            not_started_count += 1
+
+        total_progress_sum += progress_pct
+
+        sub_info = user_submissions_stat.get(uid, {"count": 0, "avg_grade": None})
+        pay = pay_map.get(uid)
+        last_act = user_last_activity.get(uid) or e.enrolled_at
+
+        learners_list.append({
+            "user_id": uid,
+            "full_name": u.full_name if u else "Learner",
+            "email": u.email if u else "N/A",
+            "role": u.role if u else "learner",
+            "is_suspended": u.is_suspended if u else False,
+            "enrolled_at": e.enrolled_at.isoformat() if e.enrolled_at else None,
+            "progress_pct": progress_pct,
+            "completed_lessons_count": done_count,
+            "total_lessons_count": total_lessons,
+            "progress_status": progress_status,
+            "certificate": {
+                "id": cert.id,
+                "code": cert.certificate_code,
+                "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
+                "pdf_url": cert.pdf_url
+            } if cert else None,
+            "submissions_count": sub_info["count"],
+            "average_grade": sub_info["avg_grade"],
+            "payment_status": "paid" if pay else ("free" if not course.is_paid else "pending"),
+            "amount_paid": pay.amount if pay else 0.0,
+            "last_activity_at": last_act.isoformat() if last_act else None
+        })
+
+    total_enrolled = len(enrollments)
+    avg_prog = round(total_progress_sum / total_enrolled, 1) if total_enrolled > 0 else 0.0
+    total_rev = sum(p.amount for p in pay_map.values()) if pay_map else 0.0
+
+    return {
+        "course": {
+            "id": course.id,
+            "title": course.title,
+            "description": course.description,
+            "status": course.status,
+            "is_paid": bool(course.is_paid),
+            "price": course.price or 0.0,
+            "passing_score": course.passing_score,
+            "instructor_id": course.instructor_id,
+            "instructor_name": course.instructor_name,
+            "instructor_email": course.instructor.email if course.instructor else "-",
+            "total_modules": total_modules,
+            "total_lessons": total_lessons,
+            "created_at": course.created_at.isoformat() if course.created_at else None
+        },
+        "summary": {
+            "total_enrolled": total_enrolled,
+            "completed_count": completed_count,
+            "in_progress_count": in_progress_count,
+            "not_started_count": not_started_count,
+            "avg_progress_pct": avg_prog,
+            "certificates_issued": len(cert_map),
+            "total_revenue": round(total_rev, 2)
+        },
+        "learners": learners_list
+    }
+
+
+# ── Learner-Level Courses Analytics Drill-Down ───────────────────────────────
+
+def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
+    """
+    Get detailed analytics for a particular learner including all enrolled courses,
+    lesson progress, quiz/assignment submissions, certificate codes, and completion status.
+    Zero N+1 queries.
+    """
+    user = db.query(models.User).filter(models.User.id == str(user_id)).first()
+    if not user:
+        # Try matching by email
+        user = db.query(models.User).filter(models.User.email == str(user_id)).first()
+    if not user:
+        return None
+
+    # Fetch all enrollments with joined courses
+    enrollments = (
+        db.query(models.Enrollment)
+        .options(
+            joinedload(models.Enrollment.course).joinedload(models.Course.instructor)
+        )
+        .filter(models.Enrollment.user_id == user.id)
+        .order_by(models.Enrollment.enrolled_at.desc())
+        .all()
+    )
+
+    valid_courses = [e.course for e in enrollments if e.course and not e.course.is_deleted]
+    course_ids = [c.id for c in valid_courses]
+
+    total_lessons_map = {}
+    total_modules_map = {}
+    course_done_lessons = defaultdict(set)
+    course_last_activity = {}
+    cert_map = {}
+    course_sub_stats = defaultdict(lambda: {"count": 0, "grades": []})
+
+    if course_ids:
+        # Batch 1: Total lessons per course
+        total_lessons_map = dict(
+            db.query(models.Module.course_id, func.count(models.Lesson.id))
+            .join(models.Lesson, models.Lesson.module_id == models.Module.id)
+            .filter(models.Module.course_id.in_(course_ids))
+            .group_by(models.Module.course_id)
+            .all()
+        )
+
+        # Batch 2: Total modules per course
+        total_modules_map = dict(
+            db.query(models.Module.course_id, func.count(models.Module.id))
+            .filter(models.Module.course_id.in_(course_ids))
+            .group_by(models.Module.course_id)
+            .all()
+        )
+
+        # Batch 3: Completed lessons for this learner
+        comp_rows = (
+            db.query(models.Module.course_id, models.LessonCompletion.lesson_id, models.LessonCompletion.completed_at)
+            .join(models.Lesson, models.Lesson.id == models.LessonCompletion.lesson_id)
+            .join(models.Module, models.Module.id == models.Lesson.module_id)
+            .filter(models.LessonCompletion.user_id == user.id, models.Module.course_id.in_(course_ids))
+            .all()
+        )
+        for cid, lid, comp_at in comp_rows:
+            course_done_lessons[cid].add(lid)
+            if comp_at:
+                if cid not in course_last_activity or comp_at > course_last_activity[cid]:
+                    course_last_activity[cid] = comp_at
+
+        # Batch 4: Submitted assignment lessons for this learner
+        sub_asgn_rows = (
+            db.query(models.Module.course_id, models.Assignment.lesson_id, models.Submission.submitted_at)
+            .join(models.Assignment, models.Submission.assignment_id == models.Assignment.id)
+            .join(models.Lesson, models.Lesson.id == models.Assignment.lesson_id)
+            .join(models.Module, models.Module.id == models.Lesson.module_id)
+            .filter(
+                models.Submission.user_id == user.id,
+                models.Module.course_id.in_(course_ids),
+                models.Submission.status.in_([
+                    models.SubmissionStatus.SUBMITTED,
+                    models.SubmissionStatus.UNDER_REVIEW,
+                    models.SubmissionStatus.APPROVED
+                ]),
+                models.Assignment.lesson_id != None
+            )
+            .all()
+        )
+        for cid, lid, sub_at in sub_asgn_rows:
+            course_done_lessons[cid].add(lid)
+            if sub_at:
+                if cid not in course_last_activity or sub_at > course_last_activity[cid]:
+                    course_last_activity[cid] = sub_at
+
+        # Batch 5: Certificates for this learner
+        certs = (
+            db.query(models.Certificate)
+            .filter(
+                models.Certificate.user_id == user.id,
+                models.Certificate.course_id.in_(course_ids),
+                models.Certificate.revoked_at.is_(None)
+            )
+            .all()
+        )
+        cert_map = {c.course_id: c for c in certs}
+
+        # Batch 6: Submissions & grades in these courses
+        asgns = (
+            db.query(models.Assignment.id, models.Assignment.course_id, models.Module.course_id.label("mod_cid"))
+            .outerjoin(models.Lesson, models.Assignment.lesson_id == models.Lesson.id)
+            .outerjoin(models.Module, models.Lesson.module_id == models.Module.id)
+            .filter(
+                or_(
+                    models.Assignment.course_id.in_(course_ids),
+                    models.Module.course_id.in_(course_ids)
+                )
+            )
+            .all()
+        )
+        asgn_to_course = {}
+        for aid, acid, mcid in asgns:
+            asgn_to_course[aid] = acid or mcid
+
+        all_asgn_ids = list(asgn_to_course.keys())
+        if all_asgn_ids:
+            subs = (
+                db.query(models.Submission.assignment_id, models.Submission.grade, models.Submission.submitted_at)
+                .filter(
+                    models.Submission.user_id == user.id,
+                    models.Submission.assignment_id.in_(all_asgn_ids)
+                )
+                .all()
+            )
+            for aid, g, sub_at in subs:
+                cid = asgn_to_course.get(aid)
+                if cid:
+                    course_sub_stats[cid]["count"] += 1
+                    if g is not None:
+                        course_sub_stats[cid]["grades"].append(g)
+                    if sub_at:
+                        if cid not in course_last_activity or sub_at > course_last_activity[cid]:
+                            course_last_activity[cid] = sub_at
+
+    courses_list = []
+    completed_count = 0
+    in_progress_count = 0
+    not_started_count = 0
+    total_completed_lessons = 0
+    all_grades = []
+
+    for e in enrollments:
+        c = e.course
+        if not c or c.is_deleted:
+            continue
+        cid = c.id
+        tot_les = total_lessons_map.get(cid, 0)
+        done_set = course_done_lessons.get(cid, set())
+        done_cnt = len(done_set)
+        total_completed_lessons += done_cnt
+
+        prog_pct = min(100, int((done_cnt / tot_les) * 100)) if tot_les > 0 else 0
+        cert = cert_map.get(cid)
+        if cert and prog_pct < 100:
+            prog_pct = 100
+
+        if prog_pct == 100 or cert:
+            prog_status = "completed"
+            completed_count += 1
+        elif prog_pct > 0:
+            prog_status = "in_progress"
+            in_progress_count += 1
+        else:
+            prog_status = "not_started"
+            not_started_count += 1
+
+        sub_data = course_sub_stats.get(cid, {"count": 0, "grades": []})
+        grades_list = sub_data["grades"]
+        all_grades.extend(grades_list)
+        avg_g = round(sum(grades_list) / len(grades_list), 1) if grades_list else None
+
+        last_act = course_last_activity.get(cid) or e.enrolled_at
+
+        courses_list.append({
+            "course_id": cid,
+            "title": c.title,
+            "description": c.description,
+            "status": c.status,
+            "is_paid": bool(c.is_paid),
+            "price": c.price or 0.0,
+            "instructor_name": c.instructor_name,
+            "instructor_email": c.instructor.email if c.instructor else None,
+            "enrolled_at": e.enrolled_at.isoformat() if e.enrolled_at else None,
+            "progress_pct": prog_pct,
+            "completed_lessons_count": done_cnt,
+            "total_lessons_count": tot_les,
+            "total_modules_count": total_modules_map.get(cid, 0),
+            "progress_status": prog_status,
+            "certificate": {
+                "id": cert.id,
+                "code": cert.certificate_code,
+                "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
+                "pdf_url": cert.pdf_url
+            } if cert else None,
+            "submissions_count": sub_data["count"],
+            "average_grade": avg_g,
+            "last_activity_at": last_act.isoformat() if last_act else None
+        })
+
+    user_avg_grade = round(sum(all_grades) / len(all_grades), 1) if all_grades else None
+
+    return {
+        "user": {
+            "id": user.id,
+            "full_name": user.full_name or "Learner",
+            "email": user.email,
+            "role": user.role,
+            "is_active": user.is_active,
+            "is_suspended": user.is_suspended,
+            "created_at": user.created_at.isoformat() if user.created_at else None
+        },
+        "summary": {
+            "total_enrolled_courses": len(courses_list),
+            "completed_courses_count": completed_count,
+            "in_progress_courses_count": in_progress_count,
+            "not_started_courses_count": not_started_count,
+            "total_certificates": len(cert_map),
+            "total_completed_lessons": total_completed_lessons,
+            "total_submissions": sum(s["count"] for s in course_sub_stats.values()),
+            "average_grade": user_avg_grade
+        },
+        "courses": courses_list
+    }
 
 def list_submissions_with_details(
     db: Session,

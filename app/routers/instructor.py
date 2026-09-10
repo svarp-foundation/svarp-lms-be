@@ -17,7 +17,7 @@ from sqlalchemy import func, distinct
 
 from .. import models, schemas, auth, database, completion_engine
 from ..utils import UPLOAD_DIR
-from ..services import instructor_service, course_service
+from ..services import instructor_service, course_service, admin_service
 
 router = APIRouter(
     prefix="/instructor",
@@ -155,6 +155,22 @@ def create_instructor_course(
     db.commit()
     db.refresh(db_course)
     return db_course
+
+
+@router.get("/courses/{course_id}/learners")
+def get_instructor_course_learners(
+    course_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: schemas.User = Depends(auth.require_instructor)
+):
+    course = db.query(models.Course).filter(
+        models.Course.id == course_id,
+        models.Course.is_deleted == False
+    ).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    _check_course_ownership(course, current_user)
+    return admin_service.get_course_learners_analytics(db, course_id=course_id)
 
 
 @router.get("/courses/{course_id}")

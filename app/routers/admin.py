@@ -48,6 +48,39 @@ async def get_admin_analytics(
     return admin_service.get_admin_analytics(db, force_refresh=refresh)
 
 
+@router.get("/analytics/courses/{course_id}/learners")
+async def get_course_learners_analytics(
+    course_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    result = admin_service.get_course_learners_analytics(db, course_id=course_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
+    return result
+
+
+@router.get("/analytics/learners/{user_id}/courses")
+async def get_learner_courses_analytics(
+    user_id: str,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    result = admin_service.get_learner_courses_analytics(db, user_id=user_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Learner not found")
+    return result
+
+
+@router.get("/analytics/learners")
+async def get_all_learners_analytics(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.require_admin)
+):
+    return admin_service.get_all_learners_analytics(db)
+
+
+
 # ── Payments ─────────────────────────────────────────────────────────────────
 
 @router.get("/payments", response_model=List[schemas.CoursePaymentAdmin])
