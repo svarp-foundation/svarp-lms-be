@@ -839,6 +839,7 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
                 "pdf_url": cert.pdf_url
             } if cert else None,
             "submissions_count": sub_info["count"],
+            "total_assignments_count": len(assignment_ids),
             "average_grade": sub_info["avg_grade"],
             "payment_status": "paid" if pay else ("free" if not course.is_paid else "pending"),
             "amount_paid": pay.amount if pay else 0.0,
@@ -996,8 +997,12 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
             .all()
         )
         asgn_to_course = {}
+        total_assignments_map = {}
         for aid, acid, mcid in asgns:
-            asgn_to_course[aid] = acid or mcid
+            cid = acid or mcid
+            asgn_to_course[aid] = cid
+            if cid:
+                total_assignments_map[cid] = total_assignments_map.get(cid, 0) + 1
 
         all_asgn_ids = list(asgn_to_course.keys())
         if all_asgn_ids:
@@ -1080,6 +1085,7 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
                 "pdf_url": cert.pdf_url
             } if cert else None,
             "submissions_count": sub_data["count"],
+            "total_assignments_count": total_assignments_map.get(cid, 0),
             "average_grade": avg_g,
             "last_activity_at": last_act.isoformat() if last_act else None
         })
