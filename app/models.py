@@ -74,6 +74,7 @@ class Module(Base):
 class LessonType(str, enum.Enum):
     TEXT = "text"
     VIDEO = "video"
+    QUIZ = "quiz"
     ASSIGNMENT = "assignment"
 
 class Lesson(Base):

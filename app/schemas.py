@@ -285,15 +285,27 @@ class PublicCertificateVerification(BaseModel):
     certificate_code: str
     profile_picture_url: Optional[str] = None
 
+class QuizQuestionOut(BaseModel):
+    question: str
+    options: List[str] = []
+    correct_answer: int = 0
+    explanation: Optional[str] = None
+    points: int = 10
+
 class LessonStatus(BaseModel):
     id: int
     title: str
-    lesson_type: LessonType
+    lesson_type: Union[LessonType, str]
     content: Optional[str] = None
     video_url: Optional[str] = None
     completed: bool = False
     locked: bool = True
     order: int
+    questions: Optional[List[QuizQuestionOut]] = None
+    assignment_title: Optional[str] = None
+    assignment_description: Optional[str] = None
+    due_date: Optional[datetime] = None
+    submission: Optional[dict] = None
     class Config:
         orm_mode = True
 

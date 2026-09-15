@@ -392,6 +392,24 @@ def get_course_content(
             if lesson.id in traversal_done_ids:
                 is_locked = False
 
+            quiz_questions = None
+            if lesson.assignment and lesson.assignment.questions:
+                quiz_questions = []
+                for q in lesson.assignment.questions:
+                    opts = [o.option_text for o in q.options]
+                    correct_idx = 0
+                    for idx, o in enumerate(q.options):
+                        if o.is_correct:
+                            correct_idx = idx
+                            break
+                    quiz_questions.append(schemas.QuizQuestionOut(
+                        question=q.question_text,
+                        options=opts,
+                        correct_answer=correct_idx,
+                        explanation="",
+                        points=10
+                    ))
+
             lessons_data.append(schemas.LessonStatus(
                 id=lesson.id,
                 title=lesson.title,
@@ -400,7 +418,11 @@ def get_course_content(
                 video_url=lesson.video_url,
                 completed=is_completed,
                 locked=is_locked,
-                order=lesson.order
+                order=lesson.order,
+                questions=quiz_questions,
+                assignment_title=lesson.assignment.title if lesson.assignment else None,
+                assignment_description=lesson.assignment.description if lesson.assignment else None,
+                due_date=lesson.assignment.due_date if lesson.assignment else None,
             ))
 
             previous_traversed = lesson.id in traversal_done_ids

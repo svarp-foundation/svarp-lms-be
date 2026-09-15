@@ -67,14 +67,16 @@ def parse_course_file(content: str):
                 current_state = 'lesson_meta'
                 continue
             elif tag in ('ASSIGNMENT', 'QUIZ'):
+                target_type = 'quiz' if tag == 'QUIZ' else 'assignment'
                 if current_lesson is None:
                     if current_module is None:
                         current_module = {'title': 'General Module', 'lessons': []}
                         modules.append(current_module)
-                    current_lesson = {'title': 'Assessment', 'lesson_type': 'assignment', 'content': ''}
+                    current_lesson = {'title': 'Assessment', 'lesson_type': target_type, 'content': ''}
                     current_module['lessons'].append(current_lesson)
                 else:
-                    current_lesson['lesson_type'] = 'assignment'
+                    if current_lesson.get('lesson_type') not in ('quiz', 'assignment'):
+                        current_lesson['lesson_type'] = target_type
                 current_assignment = {'questions': []}
                 current_lesson['assignment_data'] = current_assignment
                 current_question = None
@@ -94,7 +96,7 @@ def parse_course_file(content: str):
                 current_assignment['questions'].append(current_question)
                 current_state = 'question'
                 continue
-            elif tag == 'END_ASSIGNMENT':
+            elif tag in ('END_ASSIGNMENT', 'END_QUIZ'):
                 current_question = None
                 current_state = 'lesson_meta' if current_lesson else None
                 continue
@@ -360,30 +362,34 @@ def _build_curriculum(db: Session, course_id: int, modules_data: list):
             db.add(db_lesson)
             db.flush()
 
-            assignment_data = l_data.get('assignment')
+            assignment_data = l_data.get('assignment') or l_data.get('assignment_data')
             if assignment_data:
                 db_assignment = models.Assignment(
+                    course_id=course_id,
                     lesson_id=db_lesson.id,
-                    title=assignment_data.get('title', f"Assignment for {db_lesson.title}"),
+                    title=assignment_data.get('title', f"Assessment for {db_lesson.title}"),
                     description=assignment_data.get('description', '')
                 )
                 db.add(db_assignment)
                 db.flush()
 
                 for q_idx, q_data in enumerate(assignment_data.get('questions', [])):
+                    q_text = q_data.get('text') or q_data.get('question_text', '')
+                    q_type = q_data.get('type') or q_data.get('question_type', 'mcq')
                     db_question = models.Question(
                         assignment_id=db_assignment.id,
-                        question_text=q_data.get('question_text', ''),
-                        question_type=q_data.get('question_type', 'subjective'),
+                        question_text=q_text,
+                        question_type=q_type,
                         order=q_idx + 1
                     )
                     db.add(db_question)
                     db.flush()
 
                     for opt_data in q_data.get('options', []):
+                        opt_text = opt_data.get('text') or opt_data.get('option_text', '')
                         db_option = models.QuestionOption(
                             question_id=db_question.id,
-                            option_text=opt_data.get('option_text', ''),
+                            option_text=opt_text,
                             is_correct=opt_data.get('is_correct', False)
                         )
                         db.add(db_option)
