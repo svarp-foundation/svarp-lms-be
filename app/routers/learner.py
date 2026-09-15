@@ -1,8 +1,8 @@
 import os
 import requests
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session, joinedload
-from typing import List
+from typing import List, Optional
 from sqlalchemy.sql import func
 from .. import models, schemas, database, auth, completion_engine, utils
 
@@ -40,11 +40,19 @@ def read_my_courses(db: Session = Depends(database.get_db), current_user: models
     return courses_with_progress
 
 @router.post("/enroll/{course_id}")
-def enroll_course(course_id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.require_learner)):
-
-    existing_enrollment = db.query(models.Enrollment).filter(models.Enrollment.user_id == current_user.id, models.Enrollment.course_id == course_id).first()
+@router.post("/courses/{course_id}/enroll")
+def enroll_course(
+    course_id: int, 
+    db: Session = Depends(database.get_db), 
+    current_user: models.User = Depends(auth.require_learner)
+):
+    existing_enrollment = db.query(models.Enrollment).filter(
+        models.Enrollment.user_id == current_user.id, 
+        models.Enrollment.course_id == course_id
+    ).first()
+    
     if existing_enrollment:
-        raise HTTPException(status_code=400, detail="Already enrolled")
+        return {"message": "Already enrolled in this course"}
 
     # Guard: paid courses require a completed payment
     course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
@@ -76,6 +84,7 @@ def enroll_course(course_id: int, db: Session = Depends(database.get_db), curren
 def mark_lesson_complete(
     course_id: int, 
     lesson_id: int, 
+    payload: Optional[dict] = Body(None),
     db: Session = Depends(database.get_db), 
     current_user: models.User = Depends(auth.require_learner)
 ):
@@ -89,7 +98,7 @@ def mark_lesson_complete(
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
         
     # Verify lesson belongs to course
-    lesson = db.query(models.Lesson).join(models.Module).filter(
+    lesson = db.query(models.Lesson).options(joinedload(models.Lesson.assignment)).join(models.Module).filter(
         models.Lesson.id == lesson_id,
         models.Module.course_id == course_id
     ).first()
@@ -107,6 +116,26 @@ def mark_lesson_complete(
         completion = models.LessonCompletion(user_id=current_user.id, lesson_id=lesson_id)
         db.add(completion)
         db.commit()
+
+    # If quiz/test score was passed, also create or update Submission record
+    score = payload.get("score") if isinstance(payload, dict) else None
+    if score is not None and lesson.assignment:
+        sub = db.query(models.Submission).filter(
+            models.Submission.assignment_id == lesson.assignment.id,
+            models.Submission.user_id == current_user.id
+        ).first()
+        if not sub:
+            sub = models.Submission(
+                assignment_id=lesson.assignment.id,
+                user_id=current_user.id,
+                grade=int(score),
+                status=models.SubmissionStatus.APPROVED
+            )
+            db.add(sub)
+        else:
+            sub.grade = int(score)
+            sub.status = models.SubmissionStatus.APPROVED
+        db.commit()
         
     db.commit()
 
@@ -118,7 +147,6 @@ def mark_lesson_complete(
     
     # TRIGGER COMPLETION ENGINE
     completion_engine.check_course_completion(db, current_user.id, course_id)
-    
     
     return {"message": "Lesson marked as complete", "progress": progress}
 

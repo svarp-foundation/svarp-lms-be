@@ -609,14 +609,32 @@ def get_all_learners_analytics(db: Session) -> list:
     # Batch 4: Submissions count and average grade per learner
     sub_stats = db.query(
         models.Submission.user_id,
-        func.count(models.Submission.id).label("sub_count"),
-        func.avg(models.Submission.grade).label("avg_grade")
+        models.Submission.assignment_id,
+        models.Submission.grade
     ).filter(
         models.Submission.user_id.in_(user_ids)
-    ).group_by(models.Submission.user_id).all()
+    ).all()
 
-    sub_counts = {r[0]: r[1] for r in sub_stats}
-    avg_grades = {r[0]: round(float(r[2]), 1) if r[2] is not None else None for r in sub_stats}
+    user_completed_aids = defaultdict(set)
+    user_grades = defaultdict(list)
+    for uid, aid, grade in sub_stats:
+        user_completed_aids[uid].add(aid)
+        if grade is not None:
+            user_grades[uid].append(grade)
+
+    # Also credit assignments whose linked lessons are completed by the user
+    completed_quiz_lessons = (
+        db.query(models.LessonCompletion.user_id, models.Assignment.id)
+        .join(models.Lesson, models.Lesson.id == models.LessonCompletion.lesson_id)
+        .join(models.Assignment, models.Assignment.lesson_id == models.Lesson.id)
+        .filter(models.LessonCompletion.user_id.in_(user_ids))
+        .all()
+    )
+    for uid, aid in completed_quiz_lessons:
+        user_completed_aids[uid].add(aid)
+
+    sub_counts = {uid: len(aids) for uid, aids in user_completed_aids.items()}
+    avg_grades = {uid: round(float(sum(grades) / len(grades)), 1) if grades else None for uid, grades in user_grades.items()}
 
     result = []
     for u in learners:
@@ -738,7 +756,7 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
 
         # Batch 4: Submissions and average grades in this course
         course_assignments = (
-            db.query(models.Assignment.id)
+            db.query(models.Assignment.id, models.Assignment.lesson_id)
             .outerjoin(models.Lesson, models.Assignment.lesson_id == models.Lesson.id)
             .outerjoin(models.Module, models.Lesson.module_id == models.Module.id)
             .filter(
@@ -750,30 +768,50 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
             .all()
         )
         assignment_ids = [a[0] for a in course_assignments]
+        assignment_lesson_map = {a[0]: a[1] for a in course_assignments if a[1]}
 
+        user_subs_by_aid = defaultdict(dict)
         if assignment_ids:
-            sub_stat_rows = (
+            sub_rows = (
                 db.query(
                     models.Submission.user_id,
-                    func.count(models.Submission.id),
-                    func.avg(models.Submission.grade),
-                    func.max(models.Submission.submitted_at)
+                    models.Submission.assignment_id,
+                    models.Submission.grade,
+                    models.Submission.submitted_at
                 )
                 .filter(
                     models.Submission.user_id.in_(user_ids),
                     models.Submission.assignment_id.in_(assignment_ids)
                 )
-                .group_by(models.Submission.user_id)
                 .all()
             )
-            for uid, cnt, avg_g, max_at in sub_stat_rows:
-                user_submissions_stat[uid] = {
-                    "count": cnt,
-                    "avg_grade": round(float(avg_g), 1) if avg_g is not None else None
-                }
+            for uid, aid, grade, max_at in sub_rows:
+                user_subs_by_aid[uid][aid] = {"grade": grade, "submitted_at": max_at}
                 if max_at:
                     if uid not in user_last_activity or max_at > user_last_activity[uid]:
                         user_last_activity[uid] = max_at
+
+        for uid in user_ids:
+            user_done = user_done_lessons.get(uid, set())
+            completed_aid_set = set()
+            grades_list = []
+
+            # 1. Any explicit submission record
+            for aid, sinfo in user_subs_by_aid.get(uid, {}).items():
+                completed_aid_set.add(aid)
+                if sinfo["grade"] is not None:
+                    grades_list.append(sinfo["grade"])
+
+            # 2. Any assignment whose linked lesson was completed (e.g. interactive quizzes)
+            for aid, lid in assignment_lesson_map.items():
+                if lid in user_done:
+                    completed_aid_set.add(aid)
+
+            avg_g = round(float(sum(grades_list) / len(grades_list)), 1) if grades_list else None
+            user_submissions_stat[uid] = {
+                "count": len(completed_aid_set),
+                "avg_grade": avg_g
+            }
 
         # Batch 5: Payments for this course
         payments = (
@@ -985,7 +1023,7 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
 
         # Batch 6: Submissions & grades in these courses
         asgns = (
-            db.query(models.Assignment.id, models.Assignment.course_id, models.Module.course_id.label("mod_cid"))
+            db.query(models.Assignment.id, models.Assignment.course_id, models.Module.course_id.label("mod_cid"), models.Assignment.lesson_id)
             .outerjoin(models.Lesson, models.Assignment.lesson_id == models.Lesson.id)
             .outerjoin(models.Module, models.Lesson.module_id == models.Module.id)
             .filter(
@@ -998,11 +1036,17 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
         )
         asgn_to_course = {}
         total_assignments_map = {}
-        for aid, acid, mcid in asgns:
+        asgn_lesson_map = {}
+        for aid, acid, mcid, lid in asgns:
             cid = acid or mcid
             asgn_to_course[aid] = cid
             if cid:
                 total_assignments_map[cid] = total_assignments_map.get(cid, 0) + 1
+                if lid:
+                    asgn_lesson_map[aid] = (cid, lid)
+
+        course_completed_aids = defaultdict(set)
+        course_grades_map = defaultdict(list)
 
         all_asgn_ids = list(asgn_to_course.keys())
         if all_asgn_ids:
@@ -1017,12 +1061,24 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
             for aid, g, sub_at in subs:
                 cid = asgn_to_course.get(aid)
                 if cid:
-                    course_sub_stats[cid]["count"] += 1
+                    course_completed_aids[cid].add(aid)
                     if g is not None:
-                        course_sub_stats[cid]["grades"].append(g)
+                        course_grades_map[cid].append(g)
                     if sub_at:
                         if cid not in course_last_activity or sub_at > course_last_activity[cid]:
                             course_last_activity[cid] = sub_at
+
+        # Also credit assignments whose linked lessons were completed (e.g. interactive quizzes)
+        for aid, (cid, lid) in asgn_lesson_map.items():
+            if lid in course_done_lessons.get(cid, set()):
+                course_completed_aids[cid].add(aid)
+
+        for cid in course_ids:
+            grades_list = course_grades_map.get(cid, [])
+            course_sub_stats[cid] = {
+                "count": len(course_completed_aids.get(cid, set())),
+                "grades": grades_list
+            }
 
     courses_list = []
     completed_count = 0
