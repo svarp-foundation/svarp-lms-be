@@ -468,6 +468,7 @@ def get_course_content(
     return schemas.CourseContent(
         id=course.id,
         title=course.title,
+        passing_score=course.passing_score,
         modules=modules_data,
         progress=prog,
         require_final_assignment=course.require_final_assignment,

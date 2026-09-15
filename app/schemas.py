@@ -321,6 +321,7 @@ class ModuleStatus(BaseModel):
 class CourseContent(BaseModel):
     id: int
     title: str
+    passing_score: Optional[int] = 70
     modules: List[ModuleStatus] = []
     progress: int
     require_final_assignment: bool = False
