@@ -8,6 +8,15 @@ from typing import Dict, List, Set
 
 def calculate_dynamic_progress(db: Session, user_id: str, course_id: int) -> int:
     """Calculates completion progress on the fly in minimal queries."""
+    # Check if certificate exists (if valid cert exists, progress is 100)
+    cert = db.query(models.Certificate.id).filter(
+        models.Certificate.user_id == str(user_id),
+        models.Certificate.course_id == course_id,
+        models.Certificate.revoked_at == None
+    ).first()
+    if cert:
+        return 100
+
     total_lessons = (
         db.query(func.count(models.Lesson.id))
         .join(models.Module, models.Module.id == models.Lesson.module_id)
@@ -41,7 +50,11 @@ def calculate_dynamic_progress(db: Session, user_id: str, course_id: int) -> int
             .filter(
                 models.Submission.user_id == str(user_id),
                 models.Module.course_id == course_id,
-                models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW]),
+                models.Submission.status.in_([
+                    models.SubmissionStatus.SUBMITTED,
+                    models.SubmissionStatus.UNDER_REVIEW,
+                    models.SubmissionStatus.APPROVED,
+                ]),
                 models.Assignment.lesson_id != None
             )
             .all()
@@ -53,9 +66,18 @@ def calculate_dynamic_progress(db: Session, user_id: str, course_id: int) -> int
 
 
 def calculate_dynamic_progress_batch(db: Session, user_id: str, course_ids: List[int]) -> Dict[int, int]:
-    """Calculates completion progress for multiple courses simultaneously in 3 bulk queries."""
+    """Calculates completion progress for multiple courses simultaneously in bulk queries."""
     if not course_ids:
         return {}
+
+    # Check existing valid certificates
+    cert_courses = set(
+        c[0] for c in db.query(models.Certificate.course_id).filter(
+            models.Certificate.user_id == str(user_id),
+            models.Certificate.course_id.in_(course_ids),
+            models.Certificate.revoked_at == None
+        ).all()
+    )
 
     # 1. Total lessons per course
     total_counts = dict(
@@ -78,7 +100,7 @@ def calculate_dynamic_progress_batch(db: Session, user_id: str, course_ids: List
         .all()
     )
 
-    # 3. Submitted assignment lessons per course
+    # 3. Submitted assignment lessons per course (submitted, under review, or approved)
     submitted_rows = (
         db.query(models.Module.course_id, models.Assignment.lesson_id)
         .join(models.Submission, models.Submission.assignment_id == models.Assignment.id)
@@ -87,7 +109,11 @@ def calculate_dynamic_progress_batch(db: Session, user_id: str, course_ids: List
         .filter(
             models.Submission.user_id == str(user_id),
             models.Module.course_id.in_(course_ids),
-            models.Submission.status.in_([models.SubmissionStatus.SUBMITTED, models.SubmissionStatus.UNDER_REVIEW]),
+            models.Submission.status.in_([
+                models.SubmissionStatus.SUBMITTED,
+                models.SubmissionStatus.UNDER_REVIEW,
+                models.SubmissionStatus.APPROVED,
+            ]),
             models.Assignment.lesson_id != None
         )
         .all()
@@ -101,9 +127,12 @@ def calculate_dynamic_progress_batch(db: Session, user_id: str, course_ids: List
 
     result: Dict[int, int] = {}
     for cid in course_ids:
-        tot = total_counts.get(cid, 0)
-        done = len(done_per_course.get(cid, set()))
-        result[cid] = min(100, int((done / tot) * 100)) if tot > 0 else 0
+        if cid in cert_courses:
+            result[cid] = 100
+        else:
+            tot = total_counts.get(cid, 0)
+            done = len(done_per_course.get(cid, set()))
+            result[cid] = min(100, int((done / tot) * 100)) if tot > 0 else 0
 
     return result
 
