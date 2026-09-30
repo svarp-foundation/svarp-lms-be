@@ -48,6 +48,8 @@ class Course(Base):
     is_deleted = Column(Boolean, default=False)
     is_paid = Column(Boolean, default=False)
     price = Column(Float, default=0.0)
+    is_certificate_paid = Column(Boolean, default=False)
+    certificate_price = Column(Float, default=0.0)
     instructor_id = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -216,6 +218,7 @@ class CoursePayment(Base):
     coupon_code = Column(String, nullable=True)
     coupon_id = Column(Integer, nullable=True)
     discount_amount = Column(Float, default=0.0)
+    payment_type = Column(String, default="course_enrollment", nullable=True)  # "course_enrollment" or "certificate"
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")

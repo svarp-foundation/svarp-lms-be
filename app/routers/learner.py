@@ -485,6 +485,20 @@ def get_course_content(
             profile_picture_url = "/media/profile-picture"
         verification_readiness = user_data.get("payment_readiness")
 
+    # Determine if certificate is paid, purchased, or locked for payment
+    is_cert_paid = bool(course.is_certificate_paid and (course.certificate_price or 0) > 0)
+    is_member = utils.is_active_member(user_data)
+    is_cert_purchased = is_member
+    if is_cert_paid and not is_member:
+        paid_record = db.query(models.CoursePayment.id).filter(
+            models.CoursePayment.user_id == current_user.id,
+            models.CoursePayment.course_id == course_id,
+            models.CoursePayment.status == "success"
+        ).first()
+        is_cert_purchased = bool(paid_record)
+
+    certificate_locked_for_payment = bool(is_cert_paid and not is_cert_purchased and prog >= 100 and not cert)
+
     # Fetch Final Assignment if required
     final_assignment = None
     if course.require_final_assignment:
@@ -501,6 +515,12 @@ def get_course_content(
         progress=prog,
         require_final_assignment=course.require_final_assignment,
         final_assignment=schemas.AssignmentDetail.model_validate(final_assignment, from_attributes=True) if final_assignment else None,
+        is_paid=course.is_paid,
+        price=course.price or 0.0,
+        is_certificate_paid=course.is_certificate_paid,
+        certificate_price=course.certificate_price or 0.0,
+        is_certificate_purchased=is_cert_purchased,
+        certificate_locked_for_payment=certificate_locked_for_payment,
         certificate_pdf_url=cert.pdf_url if cert else None,
         certificate_code=cert.certificate_code if cert else None,
         profile_picture_url=profile_picture_url,
@@ -595,6 +615,10 @@ def claim_course_certificate(
     current_user: models.User = Depends(auth.require_learner)
 ):
     """Claim or fetch certificate for a completed course."""
+    course = db.query(models.Course).filter(models.Course.id == course_id, models.Course.is_deleted == False).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found or deleted")
+
     cert = db.query(models.Certificate).filter(
         models.Certificate.user_id == current_user.id,
         models.Certificate.course_id == course_id,
@@ -608,6 +632,21 @@ def claim_course_certificate(
                 status_code=400,
                 detail="Course curriculum must be 100% completed to claim your certificate."
             )
+
+        # Check paid certificate requirement
+        if course.is_certificate_paid and (course.certificate_price or 0) > 0:
+            user_data = utils.fetch_user_membership(current_user.email)
+            if not utils.is_active_member(user_data):
+                has_paid_cert = db.query(models.CoursePayment.id).filter(
+                    models.CoursePayment.user_id == current_user.id,
+                    models.CoursePayment.course_id == course_id,
+                    models.CoursePayment.status == "success"
+                ).first()
+                if not has_paid_cert:
+                    raise HTTPException(
+                        status_code=402,
+                        detail=f"Certificate payment of ₹{course.certificate_price:.2f} is required to unlock this certificate."
+                    )
 
         cert = completion_engine.check_course_completion(db, current_user.id, course_id)
         if not cert:
@@ -623,7 +662,6 @@ def claim_course_certificate(
             db.commit()
             db.refresh(cert)
 
-    course = db.query(models.Course).filter(models.Course.id == course_id).first()
     return {
         "id": cert.id,
         "certificate_code": cert.certificate_code,

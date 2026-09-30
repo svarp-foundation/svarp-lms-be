@@ -173,7 +173,9 @@ def create_course_from_parsed_data(
         title=course_data.get('title', 'Imported Course'),
         description=course_data.get('description', ''),
         price=float(course_data.get('price', 0)),
-        is_paid=course_data.get('is_paid', 'false').lower() == 'true',
+        is_paid=str(course_data.get('is_paid', 'false')).lower() == 'true',
+        is_certificate_paid=str(course_data.get('is_certificate_paid', 'false')).lower() == 'true',
+        certificate_price=float(course_data.get('certificate_price', 0)),
         status=course_data.get('status', models.CourseStatus.DRAFT),
         passing_score=int(course_data.get('passing_score', 70)),
         instructor_id=instructor_id,
@@ -219,6 +221,13 @@ def update_course_curriculum_from_parsed_data(
             pass
     if 'is_paid' in course_data:
         db_course.is_paid = str(course_data['is_paid']).lower() == 'true'
+    if 'is_certificate_paid' in course_data:
+        db_course.is_certificate_paid = str(course_data['is_certificate_paid']).lower() == 'true'
+    if 'certificate_price' in course_data:
+        try:
+            db_course.certificate_price = float(course_data['certificate_price'])
+        except (ValueError, TypeError):
+            pass
     if 'passing_score' in course_data:
         try:
             db_course.passing_score = int(course_data['passing_score'])

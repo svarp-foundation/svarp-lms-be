@@ -207,6 +207,21 @@ def check_course_completion(db: Session, user_id: int, course_id: int):
         return None
 
 
+    # Check paid certificate requirement:
+    # If the course requires a paid certificate, verify payment or active SVARP membership
+    if course.is_certificate_paid and (course.certificate_price or 0) > 0:
+        from . import utils
+        user_data = utils.fetch_user_membership(user.email)
+        if not utils.is_active_member(user_data):
+            has_paid_cert = db.query(models.CoursePayment.id).filter(
+                models.CoursePayment.user_id == user.id,
+                models.CoursePayment.course_id == course_id,
+                models.CoursePayment.status == "success"
+            ).first()
+            if not has_paid_cert:
+                print(f"[completion_engine] Certificate payment required for course {course_id}, user {user.email}")
+                return None
+
     # Check profile verification if SVARP membership is connected
     from . import utils
 

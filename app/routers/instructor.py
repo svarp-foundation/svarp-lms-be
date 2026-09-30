@@ -252,6 +252,8 @@ def get_instructor_course_detail(
         "require_final_assignment": course.require_final_assignment,
         "is_paid": course.is_paid,
         "price": course.price,
+        "is_certificate_paid": course.is_certificate_paid,
+        "certificate_price": course.certificate_price,
         "instructor_id": course.instructor_id,
         "instructor_name": (
             course.instructor.full_name

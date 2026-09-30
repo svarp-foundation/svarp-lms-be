@@ -49,6 +49,8 @@ class CourseBase(BaseModel):
     is_paid: Optional[bool] = False
     price: Optional[float] = 0.0
     discounted_price: Optional[float] = None
+    is_certificate_paid: Optional[bool] = False
+    certificate_price: Optional[float] = 0.0
     instructor_id: Optional[str] = None
     instructor_name: Optional[str] = None
 
@@ -67,6 +69,8 @@ class CourseUpdate(BaseModel):
     is_deleted: Optional[bool] = None
     is_paid: Optional[bool] = None
     price: Optional[float] = None
+    is_certificate_paid: Optional[bool] = None
+    certificate_price: Optional[float] = None
     instructor_id: Optional[str] = None
 
 class Course(CourseBase):
@@ -326,6 +330,12 @@ class CourseContent(BaseModel):
     progress: int
     require_final_assignment: bool = False
     final_assignment: Optional[AssignmentDetail] = None
+    is_paid: Optional[bool] = False
+    price: Optional[float] = 0.0
+    is_certificate_paid: Optional[bool] = False
+    certificate_price: Optional[float] = 0.0
+    is_certificate_purchased: Optional[bool] = False
+    certificate_locked_for_payment: Optional[bool] = False
     certificate_pdf_url: Optional[str] = None
     certificate_code: Optional[str] = None
     profile_picture_url: Optional[str] = None
@@ -351,6 +361,7 @@ class CoursePaymentCreate(BaseModel):
     amount: float
     currency: str = "INR"
     coupon_code: Optional[str] = None
+    payment_type: Optional[str] = "course_enrollment"  # "course_enrollment" or "certificate"
 
 class CoursePaymentOrderResponse(BaseModel):
     id: int
@@ -370,6 +381,7 @@ class CoursePaymentVerify(BaseModel):
 class CouponValidateRequest(BaseModel):
     code: str
     course_id: int
+    payment_type: Optional[str] = "course_enrollment"
 
 class CoursePaymentAdmin(BaseModel):
     id: int

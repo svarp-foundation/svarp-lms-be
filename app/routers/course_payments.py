@@ -75,7 +75,7 @@ def create_course_payment_order(
         phone_number = None
         verification_data = None
 
-    # Validate course exists and is paid
+    # Validate course exists and payment requirements based on payment_type
     course = db.query(models.Course).filter(
         models.Course.id == payment_data.course_id,
         models.Course.is_deleted == False,
@@ -84,17 +84,36 @@ def create_course_payment_order(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    if not course.is_paid:
-        raise HTTPException(status_code=400, detail="This course is free — no payment required")
+    is_certificate_payment = (payment_data.payment_type == "certificate")
 
+    if is_certificate_payment:
+        if not course.is_certificate_paid or (course.certificate_price or 0) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="This course does not require a fee for certificate issuance"
+            )
+        base_amount = float(course.certificate_price)
 
-    # Check if already enrolled (payment already done)
-    existing_enrollment = db.query(models.Enrollment).filter(
-        models.Enrollment.user_id == current_user.id,
-        models.Enrollment.course_id == payment_data.course_id,
-    ).first()
-    if existing_enrollment:
-        raise HTTPException(status_code=400, detail="Already enrolled in this course")
+        # Check if already paid for certificate
+        existing_cert_payment = db.query(models.CoursePayment).filter(
+            models.CoursePayment.user_id == current_user.id,
+            models.CoursePayment.course_id == payment_data.course_id,
+            models.CoursePayment.status == "success",
+        ).first()
+        if existing_cert_payment:
+            raise HTTPException(status_code=400, detail="Certificate fee has already been paid for this course")
+    else:
+        if not course.is_paid:
+            raise HTTPException(status_code=400, detail="This course is free — no payment required")
+        base_amount = float(course.price)
+
+        # Check if already enrolled (payment already done)
+        existing_enrollment = db.query(models.Enrollment).filter(
+            models.Enrollment.user_id == current_user.id,
+            models.Enrollment.course_id == payment_data.course_id,
+        ).first()
+        if existing_enrollment:
+            raise HTTPException(status_code=400, detail="Already enrolled in this course")
 
     # Calculate GST (18%) and apply coupon discount if applicable
     discount_amount = 0.0
@@ -111,11 +130,11 @@ def create_course_payment_order(
                 json={
                     "code": payment_data.coupon_code,
                     "user_id": current_user.email,
-                    "subtotal": float(course.price),
+                    "subtotal": base_amount,
                     "items": [
                         {
-                            "id": str(course.id),
-                            "price": float(course.price),
+                            "id": f"{course.id}_{payment_data.payment_type or 'course'}",
+                            "price": base_amount,
                             "quantity": 1
                         }
                     ]
@@ -143,7 +162,6 @@ def create_course_payment_order(
             raise HTTPException(status_code=502, detail="Discount coupon validator service currently unavailable")
 
     gst_rate = 0.18
-    base_amount = course.price
     discounted_base = max(0.0, base_amount - discount_amount)
     gst_amount = discounted_base * gst_rate
     total_amount = discounted_base + gst_amount
@@ -158,10 +176,11 @@ def create_course_payment_order(
         "amount": int(total_amount * 100) if payment_data.currency == "INR" else int(total_amount),
         "currency": payment_data.currency,
         "media_type": "application/json",
-        "plan_type": "course",
+        "plan_type": "certificate" if is_certificate_payment else "course",
         "metadata_info": {
             "course_id": payment_data.course_id,
             "user_id": current_user.id,
+            "payment_type": payment_data.payment_type or "course_enrollment",
             "base_amount": base_amount,
             "gst_amount": gst_amount,
         },
@@ -191,6 +210,7 @@ def create_course_payment_order(
         coupon_code=payment_data.coupon_code,
         coupon_id=coupon_id,
         discount_amount=discount_amount,
+        payment_type=payment_data.payment_type or "course_enrollment",
     )
     db.add(db_payment)
     db.commit()
@@ -214,7 +234,7 @@ def verify_course_payment(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.require_learner),
 ):
-    """Verify a Razorpay payment via CPP and auto-enroll the user in the course."""
+    """Verify a Razorpay payment via CPP, handle enrollment or certificate unlocking."""
 
     # Call CPP to verify
     headers = {
@@ -270,7 +290,7 @@ def verify_course_payment(
         except Exception as e:
             print(f"Coupon Claim Error: {e}")
 
-    # Auto-enroll the user in the course
+    # Ensure user is enrolled in the course
     existing_enrollment = db.query(models.Enrollment).filter(
         models.Enrollment.user_id == current_user.id,
         models.Enrollment.course_id == db_payment.course_id,
@@ -284,10 +304,21 @@ def verify_course_payment(
         db.add(enrollment)
         db.commit()
 
+    # If this was a certificate payment, attempt instant certificate issuance if curriculum is complete
+    from .. import completion_engine
+    completion_engine.check_course_completion(db, current_user.id, db_payment.course_id)
+
+    msg = (
+        "Certificate payment verified. Your verified certificate is unlocked!"
+        if db_payment.payment_type == "certificate"
+        else "Payment verified. You have been enrolled in the course."
+    )
+
     return {
         "status": "success",
-        "message": "Payment verified. You have been enrolled in the course.",
+        "message": msg,
         "course_id": db_payment.course_id,
+        "payment_type": db_payment.payment_type or "course_enrollment",
     }
 
 
@@ -305,6 +336,9 @@ def validate_checkout_coupon(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
         
+    is_certificate = (request_data.payment_type == "certificate")
+    base_price = float(course.certificate_price or 0.0) if is_certificate else float(course.price or 0.0)
+
     try:
         coupon_res = requests.post(
             f"{COUPON_API_URL}/coupons/validate",
@@ -315,11 +349,11 @@ def validate_checkout_coupon(
             json={
                 "code": request_data.code,
                 "user_id": current_user.email,
-                "subtotal": float(course.price),
+                "subtotal": base_price,
                 "items": [
                     {
-                        "id": str(course.id),
-                        "price": float(course.price),
+                        "id": f"{course.id}_{request_data.payment_type or 'course'}",
+                        "price": base_price,
                         "quantity": 1
                     }
                 ]
