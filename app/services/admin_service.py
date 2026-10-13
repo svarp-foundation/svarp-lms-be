@@ -619,11 +619,13 @@ def get_all_learners_analytics(db: Session) -> list:
     ).all()
 
     user_completed_aids = defaultdict(set)
+    user_explicit_sub_aids = defaultdict(set)
     user_grades = defaultdict(list)
     user_q_stats = defaultdict(lambda: {"total_q": 0, "attempted": 0, "correct": 0, "incorrect": 0})
 
     for sid, uid, aid, grade, mcq_s, mcq_t in sub_stats:
         user_completed_aids[uid].add(aid)
+        user_explicit_sub_aids[uid].add(aid)
         if grade is not None:
             user_grades[uid].append(grade)
         if mcq_t and mcq_t > 0:
@@ -641,8 +643,24 @@ def get_all_learners_analytics(db: Session) -> list:
         .filter(models.LessonCompletion.user_id.in_(user_ids))
         .all()
     )
+    all_asgn_ids = list(set([aid for _, aid in completed_quiz_lessons]))
+    asgn_q_counts = dict(
+        db.query(models.Question.assignment_id, func.count(models.Question.id))
+        .filter(models.Question.assignment_id.in_(all_asgn_ids))
+        .group_by(models.Question.assignment_id)
+        .all()
+    ) if all_asgn_ids else {}
+
     for uid, aid in completed_quiz_lessons:
         user_completed_aids[uid].add(aid)
+        if aid not in user_explicit_sub_aids[uid]:
+            user_explicit_sub_aids[uid].add(aid)
+            q_cnt = asgn_q_counts.get(aid, 0)
+            user_grades[uid].append(100.0)
+            user_q_stats[uid]["total_q"] += q_cnt
+            user_q_stats[uid]["attempted"] += q_cnt
+            user_q_stats[uid]["correct"] += q_cnt
+            user_q_stats[uid]["incorrect"] += 0
 
     sub_counts = {uid: len(aids) for uid, aids in user_completed_aids.items()}
     avg_grades = {uid: round(float(sum(grades) / len(grades)), 1) if grades else None for uid, grades in user_grades.items()}
@@ -730,9 +748,11 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
             .filter(models.LessonCompletion.user_id.in_(user_ids), models.Module.course_id == course_id)
             .all()
         )
+        user_lesson_comp_time = {}
         for uid, lid, comp_at in comp_rows:
             user_done_lessons[uid].add(lid)
             if comp_at:
+                user_lesson_comp_time[(uid, lid)] = comp_at
                 if uid not in user_last_activity or comp_at > user_last_activity[uid]:
                     user_last_activity[uid] = comp_at
 
@@ -916,6 +936,27 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
             for aid, lid in assignment_lesson_map.items():
                 if lid in user_done:
                     completed_aid_set.add(aid)
+                    if aid not in user_subs_by_aid.get(uid, {}):
+                        q_count = assignment_question_counts.get(aid, 0)
+                        comp_time = user_lesson_comp_time.get((uid, lid)) or user_last_activity.get(uid)
+                        synthetic_sinfo = {
+                            "submission_id": None,
+                            "assignment_id": aid,
+                            "title": assignment_title_map.get(aid, f"Assessment #{aid}"),
+                            "total_questions": q_count,
+                            "attempted": q_count,
+                            "correct": q_count,
+                            "incorrect": 0,
+                            "unattempted": 0,
+                            "grade": 100.0,
+                            "status": "approved",
+                            "submitted_at": comp_time.isoformat() if comp_time else None
+                        }
+                        test_details.append(synthetic_sinfo)
+                        grades_list.append(100.0)
+                        tot_q_sum += q_count
+                        att_sum += q_count
+                        corr_sum += q_count
 
             avg_g = round(float(sum(grades_list) / len(grades_list)), 1) if grades_list else None
             accuracy = round((corr_sum / att_sum) * 100.0, 1) if att_sum > 0 else (avg_g if avg_g is not None else 0.0)
@@ -1121,9 +1162,11 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
             .filter(models.LessonCompletion.user_id == user.id, models.Module.course_id.in_(course_ids))
             .all()
         )
+        course_lesson_comp_time = {}
         for cid, lid, comp_at in comp_rows:
             course_done_lessons[cid].add(lid)
             if comp_at:
+                course_lesson_comp_time[(cid, lid)] = comp_at
                 if cid not in course_last_activity or comp_at > course_last_activity[cid]:
                     course_last_activity[cid] = comp_at
 
@@ -1305,6 +1348,22 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
         for aid, (cid, lid) in asgn_lesson_map.items():
             if lid in course_done_lessons.get(cid, set()):
                 course_completed_aids[cid].add(aid)
+                if aid not in course_subs_by_aid.get(cid, {}):
+                    q_count = asgn_question_counts.get(aid, 0)
+                    comp_time = course_lesson_comp_time.get((cid, lid)) or course_last_activity.get(cid)
+                    course_subs_by_aid[cid][aid] = {
+                        "submission_id": None,
+                        "assignment_id": aid,
+                        "title": asgn_title_map.get(aid, f"Test #{aid}"),
+                        "total_questions": q_count,
+                        "attempted": q_count,
+                        "correct": q_count,
+                        "incorrect": 0,
+                        "unattempted": 0,
+                        "grade": 100.0,
+                        "status": "approved",
+                        "submitted_at": comp_time.isoformat() if comp_time else None
+                    }
 
         for cid in course_ids:
             sub_dict = course_subs_by_aid.get(cid, {})
