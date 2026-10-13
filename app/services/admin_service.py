@@ -608,19 +608,30 @@ def get_all_learners_analytics(db: Session) -> list:
 
     # Batch 4: Submissions count and average grade per learner
     sub_stats = db.query(
+        models.Submission.id,
         models.Submission.user_id,
         models.Submission.assignment_id,
-        models.Submission.grade
+        models.Submission.grade,
+        models.Submission.mcq_score,
+        models.Submission.mcq_total
     ).filter(
         models.Submission.user_id.in_(user_ids)
     ).all()
 
     user_completed_aids = defaultdict(set)
     user_grades = defaultdict(list)
-    for uid, aid, grade in sub_stats:
+    user_q_stats = defaultdict(lambda: {"total_q": 0, "attempted": 0, "correct": 0, "incorrect": 0})
+
+    for sid, uid, aid, grade, mcq_s, mcq_t in sub_stats:
         user_completed_aids[uid].add(aid)
         if grade is not None:
             user_grades[uid].append(grade)
+        if mcq_t and mcq_t > 0:
+            corr = mcq_s if mcq_s is not None else (round((grade / 100.0) * mcq_t) if grade is not None else 0)
+            user_q_stats[uid]["total_q"] += mcq_t
+            user_q_stats[uid]["attempted"] += mcq_t
+            user_q_stats[uid]["correct"] += corr
+            user_q_stats[uid]["incorrect"] += max(0, mcq_t - corr)
 
     # Also credit assignments whose linked lessons are completed by the user
     completed_quiz_lessons = (
@@ -643,6 +654,8 @@ def get_all_learners_analytics(db: Session) -> list:
         comp_lessons = lesson_comp_counts.get(u.id, 0)
         sub_cnt = sub_counts.get(u.id, 0)
         avg_g = avg_grades.get(u.id)
+        qs = user_q_stats[u.id]
+        acc = round((qs["correct"] / qs["attempted"]) * 100.0, 1) if qs["attempted"] > 0 else (avg_g or 0.0)
 
         result.append({
             "user_id": u.id,
@@ -656,7 +669,12 @@ def get_all_learners_analytics(db: Session) -> list:
             "certificates_count": cert_cnt,
             "completed_lessons_count": comp_lessons,
             "submissions_count": sub_cnt,
-            "average_grade": avg_g
+            "average_grade": avg_g,
+            "total_questions": qs["total_q"],
+            "questions_attempted": qs["attempted"],
+            "total_correct": qs["correct"],
+            "total_incorrect": qs["incorrect"],
+            "accuracy_pct": acc
         })
 
     return result
@@ -754,9 +772,9 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
         )
         cert_map = {c.user_id: c for c in certs}
 
-        # Batch 4: Submissions and average grades in this course
+        # Batch 4: Submissions and test results in this course
         course_assignments = (
-            db.query(models.Assignment.id, models.Assignment.lesson_id)
+            db.query(models.Assignment.id, models.Assignment.lesson_id, models.Assignment.title)
             .outerjoin(models.Lesson, models.Assignment.lesson_id == models.Lesson.id)
             .outerjoin(models.Module, models.Lesson.module_id == models.Module.id)
             .filter(
@@ -769,14 +787,26 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
         )
         assignment_ids = [a[0] for a in course_assignments]
         assignment_lesson_map = {a[0]: a[1] for a in course_assignments if a[1]}
+        assignment_title_map = {a[0]: a[2] or f"Assessment #{a[0]}" for a in course_assignments}
+
+        assignment_question_counts = dict(
+            db.query(models.Question.assignment_id, func.count(models.Question.id))
+            .filter(models.Question.assignment_id.in_(assignment_ids))
+            .group_by(models.Question.assignment_id)
+            .all()
+        ) if assignment_ids else {}
 
         user_subs_by_aid = defaultdict(dict)
-        if assignment_ids:
+        if assignment_ids and user_ids:
             sub_rows = (
                 db.query(
+                    models.Submission.id,
                     models.Submission.user_id,
                     models.Submission.assignment_id,
                     models.Submission.grade,
+                    models.Submission.mcq_score,
+                    models.Submission.mcq_total,
+                    models.Submission.status,
                     models.Submission.submitted_at
                 )
                 .filter(
@@ -785,8 +815,76 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
                 )
                 .all()
             )
-            for uid, aid, grade, max_at in sub_rows:
-                user_subs_by_aid[uid][aid] = {"grade": grade, "submitted_at": max_at}
+
+            sub_ids = [s[0] for s in sub_rows]
+            sub_answer_stats = {}
+            if sub_ids:
+                ans_rows = (
+                    db.query(
+                        models.AnswerSubmission.submission_id,
+                        func.count(models.AnswerSubmission.id).label("total_answers"),
+                        func.sum(case((models.AnswerSubmission.is_correct == True, 1), else_=0)).label("correct"),
+                        func.sum(case((models.AnswerSubmission.is_correct == False, 1), else_=0)).label("incorrect"),
+                        func.sum(case((
+                            or_(
+                                models.AnswerSubmission.selected_option_id.isnot(None),
+                                and_(models.AnswerSubmission.answer_text.isnot(None), models.AnswerSubmission.answer_text != "")
+                            ), 1
+                        ), else_=0)).label("attempted")
+                    )
+                    .filter(models.AnswerSubmission.submission_id.in_(sub_ids))
+                    .group_by(models.AnswerSubmission.submission_id)
+                    .all()
+                )
+                for sid, tot_ans, corr, incorr, att in ans_rows:
+                    sub_answer_stats[sid] = {
+                        "total_answers": tot_ans or 0,
+                        "correct": corr or 0,
+                        "incorrect": incorr or 0,
+                        "attempted": att or 0
+                    }
+
+            for sid, uid, aid, grade, mcq_s, mcq_t, stat, max_at in sub_rows:
+                q_count = assignment_question_counts.get(aid, 0)
+                ans_stat = sub_answer_stats.get(sid)
+                
+                if ans_stat and ans_stat["total_answers"] > 0:
+                    tot_q = max(q_count, ans_stat["total_answers"], mcq_t or 0)
+                    corr = ans_stat["correct"]
+                    incorr = ans_stat["incorrect"]
+                    att = ans_stat["attempted"]
+                elif mcq_t and mcq_t > 0:
+                    tot_q = mcq_t
+                    corr = mcq_s if mcq_s is not None else (round((grade / 100.0) * tot_q) if grade is not None else 0)
+                    incorr = max(0, tot_q - corr)
+                    att = tot_q
+                elif q_count > 0 and grade is not None:
+                    tot_q = q_count
+                    corr = round((grade / 100.0) * tot_q)
+                    incorr = max(0, tot_q - corr)
+                    att = tot_q
+                else:
+                    tot_q = q_count
+                    corr = mcq_s or 0
+                    incorr = 0
+                    att = 0
+
+                unatt = max(0, tot_q - att)
+                calc_score = float(grade) if grade is not None else (round((corr / tot_q) * 100.0, 1) if tot_q > 0 else None)
+
+                user_subs_by_aid[uid][aid] = {
+                    "submission_id": sid,
+                    "assignment_id": aid,
+                    "title": assignment_title_map.get(aid, f"Test #{aid}"),
+                    "total_questions": tot_q,
+                    "attempted": att,
+                    "correct": corr,
+                    "incorrect": incorr,
+                    "unattempted": unatt,
+                    "grade": calc_score,
+                    "status": stat,
+                    "submitted_at": max_at.isoformat() if max_at else None
+                }
                 if max_at:
                     if uid not in user_last_activity or max_at > user_last_activity[uid]:
                         user_last_activity[uid] = max_at
@@ -795,12 +893,24 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
             user_done = user_done_lessons.get(uid, set())
             completed_aid_set = set()
             grades_list = []
+            test_details = []
+            tot_q_sum = 0
+            att_sum = 0
+            corr_sum = 0
+            incorr_sum = 0
+            unatt_sum = 0
 
             # 1. Any explicit submission record
             for aid, sinfo in user_subs_by_aid.get(uid, {}).items():
                 completed_aid_set.add(aid)
                 if sinfo["grade"] is not None:
                     grades_list.append(sinfo["grade"])
+                test_details.append(sinfo)
+                tot_q_sum += sinfo["total_questions"]
+                att_sum += sinfo["attempted"]
+                corr_sum += sinfo["correct"]
+                incorr_sum += sinfo["incorrect"]
+                unatt_sum += sinfo["unattempted"]
 
             # 2. Any assignment whose linked lesson was completed (e.g. interactive quizzes)
             for aid, lid in assignment_lesson_map.items():
@@ -808,9 +918,18 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
                     completed_aid_set.add(aid)
 
             avg_g = round(float(sum(grades_list) / len(grades_list)), 1) if grades_list else None
+            accuracy = round((corr_sum / att_sum) * 100.0, 1) if att_sum > 0 else (avg_g if avg_g is not None else 0.0)
+
             user_submissions_stat[uid] = {
                 "count": len(completed_aid_set),
-                "avg_grade": avg_g
+                "avg_grade": avg_g,
+                "total_questions": tot_q_sum,
+                "attempted": att_sum,
+                "correct": corr_sum,
+                "incorrect": incorr_sum,
+                "unattempted": unatt_sum,
+                "accuracy_pct": accuracy,
+                "tests_breakdown": test_details
             }
 
         # Batch 5: Payments for this course
@@ -855,7 +974,17 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
 
         total_progress_sum += progress_pct
 
-        sub_info = user_submissions_stat.get(uid, {"count": 0, "avg_grade": None})
+        sub_info = user_submissions_stat.get(uid, {
+            "count": 0,
+            "avg_grade": None,
+            "total_questions": 0,
+            "attempted": 0,
+            "correct": 0,
+            "incorrect": 0,
+            "unattempted": 0,
+            "accuracy_pct": 0.0,
+            "tests_breakdown": []
+        })
         pay = pay_map.get(uid)
         last_act = user_last_activity.get(uid) or e.enrolled_at
 
@@ -876,9 +1005,16 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
                 "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
                 "pdf_url": cert.pdf_url
             } if cert else None,
-            "submissions_count": sub_info["count"],
+            "submissions_count": sub_info.get("count", 0),
             "total_assignments_count": len(assignment_ids),
-            "average_grade": sub_info["avg_grade"],
+            "average_grade": sub_info.get("avg_grade"),
+            "total_questions": sub_info.get("total_questions", 0),
+            "questions_attempted": sub_info.get("attempted", 0),
+            "total_correct": sub_info.get("correct", 0),
+            "total_incorrect": sub_info.get("incorrect", 0),
+            "total_unattempted": sub_info.get("unattempted", 0),
+            "accuracy_pct": sub_info.get("accuracy_pct", 0.0),
+            "tests_breakdown": sub_info.get("tests_breakdown", []),
             "payment_status": "paid" if pay else ("free" if not course.is_paid else "pending"),
             "amount_paid": pay.amount if pay else 0.0,
             "last_activity_at": last_act.isoformat() if last_act else None
@@ -911,7 +1047,13 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
             "not_started_count": not_started_count,
             "avg_progress_pct": avg_prog,
             "certificates_issued": len(cert_map),
-            "total_revenue": round(total_rev, 2)
+            "total_revenue": round(total_rev, 2),
+            "total_questions_attempted": sum(l["questions_attempted"] for l in learners_list),
+            "total_correct_answers": sum(l["total_correct"] for l in learners_list),
+            "total_incorrect_answers": sum(l["total_incorrect"] for l in learners_list),
+            "overall_accuracy_pct": round(
+                (sum(l["total_correct"] for l in learners_list) / sum(l["questions_attempted"] for l in learners_list)) * 100.0, 1
+            ) if sum(l["questions_attempted"] for l in learners_list) > 0 else 0.0
         },
         "learners": learners_list
     }
@@ -1021,9 +1163,15 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
         )
         cert_map = {c.course_id: c for c in certs}
 
-        # Batch 6: Submissions & grades in these courses
+        # Batch 6: Submissions & detailed test results in these courses
         asgns = (
-            db.query(models.Assignment.id, models.Assignment.course_id, models.Module.course_id.label("mod_cid"), models.Assignment.lesson_id)
+            db.query(
+                models.Assignment.id,
+                models.Assignment.course_id,
+                models.Module.course_id.label("mod_cid"),
+                models.Assignment.lesson_id,
+                models.Assignment.title
+            )
             .outerjoin(models.Lesson, models.Assignment.lesson_id == models.Lesson.id)
             .outerjoin(models.Module, models.Lesson.module_id == models.Module.id)
             .filter(
@@ -1037,33 +1185,118 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
         asgn_to_course = {}
         total_assignments_map = {}
         asgn_lesson_map = {}
-        for aid, acid, mcid, lid in asgns:
+        asgn_title_map = {}
+        for aid, acid, mcid, lid, atitle in asgns:
             cid = acid or mcid
             asgn_to_course[aid] = cid
+            asgn_title_map[aid] = atitle or f"Assessment #{aid}"
             if cid:
                 total_assignments_map[cid] = total_assignments_map.get(cid, 0) + 1
                 if lid:
                     asgn_lesson_map[aid] = (cid, lid)
 
-        course_completed_aids = defaultdict(set)
-        course_grades_map = defaultdict(list)
-
         all_asgn_ids = list(asgn_to_course.keys())
+        asgn_question_counts = dict(
+            db.query(models.Question.assignment_id, func.count(models.Question.id))
+            .filter(models.Question.assignment_id.in_(all_asgn_ids))
+            .group_by(models.Question.assignment_id)
+            .all()
+        ) if all_asgn_ids else {}
+
+        course_completed_aids = defaultdict(set)
+        course_subs_by_aid = defaultdict(dict)
+
         if all_asgn_ids:
             subs = (
-                db.query(models.Submission.assignment_id, models.Submission.grade, models.Submission.submitted_at)
+                db.query(
+                    models.Submission.id,
+                    models.Submission.assignment_id,
+                    models.Submission.grade,
+                    models.Submission.mcq_score,
+                    models.Submission.mcq_total,
+                    models.Submission.status,
+                    models.Submission.submitted_at
+                )
                 .filter(
                     models.Submission.user_id == user.id,
                     models.Submission.assignment_id.in_(all_asgn_ids)
                 )
                 .all()
             )
-            for aid, g, sub_at in subs:
+
+            sub_ids = [s[0] for s in subs]
+            sub_answer_stats = {}
+            if sub_ids:
+                ans_rows = (
+                    db.query(
+                        models.AnswerSubmission.submission_id,
+                        func.count(models.AnswerSubmission.id).label("total_answers"),
+                        func.sum(case((models.AnswerSubmission.is_correct == True, 1), else_=0)).label("correct"),
+                        func.sum(case((models.AnswerSubmission.is_correct == False, 1), else_=0)).label("incorrect"),
+                        func.sum(case((
+                            or_(
+                                models.AnswerSubmission.selected_option_id.isnot(None),
+                                and_(models.AnswerSubmission.answer_text.isnot(None), models.AnswerSubmission.answer_text != "")
+                            ), 1
+                        ), else_=0)).label("attempted")
+                    )
+                    .filter(models.AnswerSubmission.submission_id.in_(sub_ids))
+                    .group_by(models.AnswerSubmission.submission_id)
+                    .all()
+                )
+                for sid, tot_ans, corr, incorr, att in ans_rows:
+                    sub_answer_stats[sid] = {
+                        "total_answers": tot_ans or 0,
+                        "correct": corr or 0,
+                        "incorrect": incorr or 0,
+                        "attempted": att or 0
+                    }
+
+            for sid, aid, g, mcq_s, mcq_t, stat, sub_at in subs:
                 cid = asgn_to_course.get(aid)
                 if cid:
                     course_completed_aids[cid].add(aid)
-                    if g is not None:
-                        course_grades_map[cid].append(g)
+                    q_count = asgn_question_counts.get(aid, 0)
+                    ans_stat = sub_answer_stats.get(sid)
+
+                    if ans_stat and ans_stat["total_answers"] > 0:
+                        tot_q = max(q_count, ans_stat["total_answers"], mcq_t or 0)
+                        corr = ans_stat["correct"]
+                        incorr = ans_stat["incorrect"]
+                        att = ans_stat["attempted"]
+                    elif mcq_t and mcq_t > 0:
+                        tot_q = mcq_t
+                        corr = mcq_s if mcq_s is not None else (round((g / 100.0) * tot_q) if g is not None else 0)
+                        incorr = max(0, tot_q - corr)
+                        att = tot_q
+                    elif q_count > 0 and g is not None:
+                        tot_q = q_count
+                        corr = round((g / 100.0) * tot_q)
+                        incorr = max(0, tot_q - corr)
+                        att = tot_q
+                    else:
+                        tot_q = q_count
+                        corr = mcq_s or 0
+                        incorr = 0
+                        att = 0
+
+                    unatt = max(0, tot_q - att)
+                    calc_score = float(g) if g is not None else (round((corr / tot_q) * 100.0, 1) if tot_q > 0 else None)
+
+                    course_subs_by_aid[cid][aid] = {
+                        "submission_id": sid,
+                        "assignment_id": aid,
+                        "title": asgn_title_map.get(aid, f"Test #{aid}"),
+                        "total_questions": tot_q,
+                        "attempted": att,
+                        "correct": corr,
+                        "incorrect": incorr,
+                        "unattempted": unatt,
+                        "grade": calc_score,
+                        "status": stat,
+                        "submitted_at": sub_at.isoformat() if sub_at else None
+                    }
+
                     if sub_at:
                         if cid not in course_last_activity or sub_at > course_last_activity[cid]:
                             course_last_activity[cid] = sub_at
@@ -1074,10 +1307,27 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
                 course_completed_aids[cid].add(aid)
 
         for cid in course_ids:
-            grades_list = course_grades_map.get(cid, [])
+            sub_dict = course_subs_by_aid.get(cid, {})
+            grades_list = [s["grade"] for s in sub_dict.values() if s["grade"] is not None]
+            tot_q_sum = sum(s["total_questions"] for s in sub_dict.values())
+            att_sum = sum(s["attempted"] for s in sub_dict.values())
+            corr_sum = sum(s["correct"] for s in sub_dict.values())
+            incorr_sum = sum(s["incorrect"] for s in sub_dict.values())
+            unatt_sum = sum(s["unattempted"] for s in sub_dict.values())
+            accuracy = round((corr_sum / att_sum) * 100.0, 1) if att_sum > 0 else (
+                round(float(sum(grades_list) / len(grades_list)), 1) if grades_list else 0.0
+            )
+
             course_sub_stats[cid] = {
                 "count": len(course_completed_aids.get(cid, set())),
-                "grades": grades_list
+                "grades": grades_list,
+                "total_questions": tot_q_sum,
+                "attempted": att_sum,
+                "correct": corr_sum,
+                "incorrect": incorr_sum,
+                "unattempted": unatt_sum,
+                "accuracy_pct": accuracy,
+                "tests_breakdown": list(sub_dict.values())
             }
 
     courses_list = []
@@ -1112,8 +1362,18 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
             prog_status = "not_started"
             not_started_count += 1
 
-        sub_data = course_sub_stats.get(cid, {"count": 0, "grades": []})
-        grades_list = sub_data["grades"]
+        sub_data = course_sub_stats.get(cid, {
+            "count": 0,
+            "grades": [],
+            "total_questions": 0,
+            "attempted": 0,
+            "correct": 0,
+            "incorrect": 0,
+            "unattempted": 0,
+            "accuracy_pct": 0.0,
+            "tests_breakdown": []
+        })
+        grades_list = sub_data.get("grades", [])
         all_grades.extend(grades_list)
         avg_g = round(sum(grades_list) / len(grades_list), 1) if grades_list else None
 
@@ -1140,9 +1400,16 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
                 "issued_at": cert.issued_at.isoformat() if cert.issued_at else None,
                 "pdf_url": cert.pdf_url
             } if cert else None,
-            "submissions_count": sub_data["count"],
+            "submissions_count": sub_data.get("count", 0),
             "total_assignments_count": total_assignments_map.get(cid, 0),
             "average_grade": avg_g,
+            "total_questions": sub_data.get("total_questions", 0),
+            "questions_attempted": sub_data.get("attempted", 0),
+            "total_correct": sub_data.get("correct", 0),
+            "total_incorrect": sub_data.get("incorrect", 0),
+            "total_unattempted": sub_data.get("unattempted", 0),
+            "accuracy_pct": sub_data.get("accuracy_pct", 0.0),
+            "tests_breakdown": sub_data.get("tests_breakdown", []),
             "last_activity_at": last_act.isoformat() if last_act else None
         })
 
@@ -1165,8 +1432,14 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
             "not_started_courses_count": not_started_count,
             "total_certificates": len(cert_map),
             "total_completed_lessons": total_completed_lessons,
-            "total_submissions": sum(s["count"] for s in course_sub_stats.values()),
-            "average_grade": user_avg_grade
+            "total_submissions": sum(c["submissions_count"] for c in courses_list),
+            "average_grade": user_avg_grade,
+            "total_questions_attempted": sum(c["questions_attempted"] for c in courses_list),
+            "total_correct_answers": sum(c["total_correct"] for c in courses_list),
+            "total_incorrect_answers": sum(c["total_incorrect"] for c in courses_list),
+            "overall_accuracy_pct": round(
+                (sum(c["total_correct"] for c in courses_list) / sum(c["questions_attempted"] for c in courses_list)) * 100.0, 1
+            ) if sum(c["questions_attempted"] for c in courses_list) > 0 else (user_avg_grade or 0.0)
         },
         "courses": courses_list
     }

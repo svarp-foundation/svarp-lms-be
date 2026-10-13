@@ -120,21 +120,68 @@ def mark_lesson_complete(
     # If quiz/test score was passed, also create or update Submission record
     score = payload.get("score") if isinstance(payload, dict) else None
     if score is not None and lesson.assignment:
+        tot_q = payload.get("total_questions") if isinstance(payload, dict) else None
+        corr_c = payload.get("correct_count") if isinstance(payload, dict) else None
+        user_ans = payload.get("answers") if isinstance(payload, dict) else None
+
+        # Fallback to assignment questions count if tot_q not passed
+        if tot_q is None and lesson.assignment.questions:
+            tot_q = len(lesson.assignment.questions)
+        if corr_c is None and tot_q and tot_q > 0:
+            corr_c = round((float(score) / 100.0) * tot_q)
+
         sub = db.query(models.Submission).filter(
             models.Submission.assignment_id == lesson.assignment.id,
             models.Submission.user_id == current_user.id
         ).first()
+
         if not sub:
             sub = models.Submission(
                 assignment_id=lesson.assignment.id,
                 user_id=current_user.id,
                 grade=int(score),
+                mcq_score=corr_c,
+                mcq_total=tot_q,
                 status=models.SubmissionStatus.APPROVED
             )
             db.add(sub)
+            db.flush()
         else:
             sub.grade = int(score)
+            if corr_c is not None:
+                sub.mcq_score = corr_c
+            if tot_q is not None:
+                sub.mcq_total = tot_q
             sub.status = models.SubmissionStatus.APPROVED
+
+        # If user answer choices were provided, store or update AnswerSubmission records
+        if user_ans and isinstance(user_ans, dict):
+            # Clean old answers
+            db.query(models.AnswerSubmission).filter(
+                models.AnswerSubmission.submission_id == sub.id
+            ).delete()
+
+            questions = lesson.assignment.questions or []
+            for q_idx_str, opt_idx in user_ans.items():
+                try:
+                    q_idx = int(q_idx_str)
+                    if 0 <= q_idx < len(questions):
+                        q = questions[q_idx]
+                        selected_opt = None
+                        is_corr = False
+                        if q.options and 0 <= int(opt_idx) < len(q.options):
+                            selected_opt = q.options[int(opt_idx)]
+                            is_corr = bool(selected_opt.is_correct)
+
+                        db.add(models.AnswerSubmission(
+                            submission_id=sub.id,
+                            question_id=q.id,
+                            selected_option_id=selected_opt.id if selected_opt else None,
+                            is_correct=is_corr
+                        ))
+                except Exception:
+                    pass
+
         db.commit()
         
     db.commit()
