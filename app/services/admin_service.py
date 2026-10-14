@@ -925,7 +925,6 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
                 completed_aid_set.add(aid)
                 if sinfo["grade"] is not None:
                     grades_list.append(sinfo["grade"])
-                test_details.append(sinfo)
                 tot_q_sum += sinfo["total_questions"]
                 att_sum += sinfo["attempted"]
                 corr_sum += sinfo["correct"]
@@ -952,11 +951,32 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
                             "status": "approved",
                             "submitted_at": comp_time.isoformat() if comp_time else None
                         }
-                        test_details.append(synthetic_sinfo)
+                        user_subs_by_aid[uid][aid] = synthetic_sinfo
                         grades_list.append(100.0)
                         tot_q_sum += q_count
                         att_sum += q_count
                         corr_sum += q_count
+
+            # 3. Construct test_details in consistent assignment order for all assignments in course
+            for a in course_assignments:
+                aid = a[0]
+                if aid in user_subs_by_aid.get(uid, {}):
+                    test_details.append(user_subs_by_aid[uid][aid])
+                else:
+                    q_count = assignment_question_counts.get(aid, 0)
+                    test_details.append({
+                        "submission_id": None,
+                        "assignment_id": aid,
+                        "title": assignment_title_map.get(aid, f"Assessment #{aid}"),
+                        "total_questions": q_count,
+                        "attempted": 0,
+                        "correct": 0,
+                        "incorrect": 0,
+                        "unattempted": q_count,
+                        "grade": None,
+                        "status": "not_attempted",
+                        "submitted_at": None
+                    })
 
             avg_g = round(float(sum(grades_list) / len(grades_list)), 1) if grades_list else None
             accuracy = round((corr_sum / att_sum) * 100.0, 1) if att_sum > 0 else (avg_g if avg_g is not None else 0.0)
@@ -1079,6 +1099,16 @@ def get_course_learners_analytics(db: Session, course_id: int) -> Optional[dict]
             "instructor_email": course.instructor.email if course.instructor else "-",
             "total_modules": total_modules,
             "total_lessons": total_lessons,
+            "total_assignments": len(course_assignments),
+            "assignments": [
+                {
+                    "id": a[0],
+                    "title": assignment_title_map.get(a[0], f"Assessment #{a[0]}"),
+                    "total_questions": assignment_question_counts.get(a[0], 0),
+                    "lesson_id": a[1]
+                }
+                for a in course_assignments
+            ],
             "created_at": course.created_at.isoformat() if course.created_at else None
         },
         "summary": {
@@ -1365,6 +1395,12 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
                         "submitted_at": comp_time.isoformat() if comp_time else None
                     }
 
+        course_asgns_list = defaultdict(list)
+        for aid, acid, mcid, lid, atitle in asgns:
+            cid = acid or mcid
+            if cid:
+                course_asgns_list[cid].append((aid, atitle))
+
         for cid in course_ids:
             sub_dict = course_subs_by_aid.get(cid, {})
             grades_list = [s["grade"] for s in sub_dict.values() if s["grade"] is not None]
@@ -1377,6 +1413,26 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
                 round(float(sum(grades_list) / len(grades_list)), 1) if grades_list else 0.0
             )
 
+            tests_list = []
+            for aid, atitle in course_asgns_list.get(cid, []):
+                if aid in sub_dict:
+                    tests_list.append(sub_dict[aid])
+                else:
+                    q_count = asgn_question_counts.get(aid, 0)
+                    tests_list.append({
+                        "submission_id": None,
+                        "assignment_id": aid,
+                        "title": asgn_title_map.get(aid, f"Assessment #{aid}"),
+                        "total_questions": q_count,
+                        "attempted": 0,
+                        "correct": 0,
+                        "incorrect": 0,
+                        "unattempted": q_count,
+                        "grade": None,
+                        "status": "not_attempted",
+                        "submitted_at": None
+                    })
+
             course_sub_stats[cid] = {
                 "count": len(course_completed_aids.get(cid, set())),
                 "grades": grades_list,
@@ -1386,7 +1442,7 @@ def get_learner_courses_analytics(db: Session, user_id: str) -> Optional[dict]:
                 "incorrect": incorr_sum,
                 "unattempted": unatt_sum,
                 "accuracy_pct": accuracy,
-                "tests_breakdown": list(sub_dict.values())
+                "tests_breakdown": tests_list
             }
 
     courses_list = []
