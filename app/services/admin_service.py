@@ -1674,3 +1674,52 @@ def list_submissions_with_details(
         })
 
     return result
+
+
+def generate_sample_certificate(
+    course_title: str,
+    student_name: str = "John Doe",
+    signatory_name: str = "Mr. Vikash Kumar",
+    progress: int = 100,
+    include_syllabus: bool = False,
+    frontend_url: str = "http://localhost:5173",
+) -> bytes:
+    """
+    Generate an in-memory sample certificate PDF directly using certificate_generator.
+    Bypasses enrollment, progress, and payment database checks.
+    """
+    from .. import certificate_generator
+
+    modules_data = None
+    if include_syllabus:
+        modules_data = [
+            {
+                "title": "Module 1: Professional Standards & Core Concepts",
+                "lessons": [
+                    {"title": "Foundational Principles & Methodologies"},
+                    {"title": "Operational Guidelines & Industry Best Practices"},
+                    {"title": "Applied Techniques & Implementation"},
+                ],
+            },
+            {
+                "title": "Module 2: Advanced Practice & Capstone Assessment",
+                "lessons": [
+                    {"title": "Advanced Problem Solving & Case Studies"},
+                    {"title": "Evaluation, Compliance & Quality Standards"},
+                    {"title": "Comprehensive Capstone Final Evaluation"},
+                ],
+            },
+        ]
+
+    sample_cert_code = certificate_generator.generate_certificate_code().replace("SVARP-", "SVARP-SAMPLE-")
+    return certificate_generator.generate_certificate_bytes(
+        student_name=student_name.strip() if (student_name and student_name.strip()) else "John Doe",
+        course_title=course_title.strip() if (course_title and course_title.strip()) else "Full-Stack Web Development Bootcamp",
+        cert_code=sample_cert_code,
+        profile_picture_url=None,
+        frontend_url=frontend_url,
+        progress=progress if progress is not None else 100,
+        modules=modules_data,
+        signatory_name=signatory_name.strip() if (signatory_name and signatory_name.strip()) else "Mr. Vikash Kumar",
+    )
+

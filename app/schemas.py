@@ -289,6 +289,13 @@ class PublicCertificateVerification(BaseModel):
     certificate_code: str
     profile_picture_url: Optional[str] = None
 
+class SampleCertificateRequest(BaseModel):
+    course_title: str = "Full-Stack Web Development Bootcamp"
+    student_name: Optional[str] = "John Doe"
+    signatory_name: Optional[str] = "Mr. Vikash Kumar"
+    progress: Optional[int] = 100
+    include_syllabus: Optional[bool] = False
+
 class QuizQuestionOut(BaseModel):
     question: str
     options: List[str] = []

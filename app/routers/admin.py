@@ -6,7 +6,7 @@ All business logic has been extracted to:
 - app.services.course_service (course CRUD, file parsing, submission review)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks, Query, Response
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, distinct, desc
 from typing import List, Optional
@@ -1185,3 +1185,28 @@ def revoke_certificate(
     db.add(log)
     db.commit()
     return {"message": f"Certificate {cert.certificate_code} revoked successfully."}
+
+
+@router.post("/certificates/sample")
+async def generate_sample_certificate(
+    payload: schemas.SampleCertificateRequest,
+    current_user: models.User = Depends(auth.require_admin),
+):
+    """
+    Generate and stream a sample certificate PDF directly using certificate_generator.
+    Bypasses enrollment, progress, and payment database checks.
+    """
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    pdf_bytes = admin_service.generate_sample_certificate(
+        course_title=payload.course_title,
+        student_name=payload.student_name,
+        signatory_name=payload.signatory_name,
+        progress=payload.progress if payload.progress is not None else 100,
+        include_syllabus=payload.include_syllabus or False,
+        frontend_url=frontend_url,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="sample_certificate.pdf"'},
+    )

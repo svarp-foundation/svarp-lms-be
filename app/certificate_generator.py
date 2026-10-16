@@ -23,6 +23,25 @@ def generate_certificate_code() -> str:
     short_uuid = str(uuid.uuid4()).split('-')[0].upper()
     return f"SVARP-{date_str}-{short_uuid}"
 
+CERTIFICATE_LOGOS_DIR = os.path.join(BASE_DIR, "app", "static", "certificate_logos")
+if not os.path.exists(CERTIFICATE_LOGOS_DIR):
+    alt_dir = os.path.join(os.path.dirname(BASE_DIR), "Certificate Logos")
+    if os.path.exists(alt_dir):
+        CERTIFICATE_LOGOS_DIR = alt_dir
+
+def get_certificate_logos():
+    """Load accreditation logo ImageReaders in sequential order 1..9."""
+    readers = []
+    if os.path.exists(CERTIFICATE_LOGOS_DIR):
+        for i in range(1, 10):
+            p = os.path.join(CERTIFICATE_LOGOS_DIR, f"{i}.png")
+            if os.path.exists(p):
+                try:
+                    readers.append(ImageReader(p))
+                except Exception:
+                    pass
+    return readers
+
 def generate_qr_code_bytes(cert_code: str, frontend_url: str = DEFAULT_FRONTEND_URL) -> bytes:
     verify_url = f"{frontend_url}/global-academy/verify/{cert_code}"
     qr = qrcode.QRCode(
@@ -123,41 +142,62 @@ def generate_certificate_bytes(
     c.restoreState()
     c.setFillAlpha(1.0) # Reset alpha
     
-    # 4. QR Code (Top Right)
+    # 4. Accreditation Logos Header Card Band
+    logo_readers = get_certificate_logos()
+    if logo_readers:
+        banner_y = height - 68
+        banner_h = 50
+        banner_w = width - 80
+        c.setFillColor(colors.HexColor("#fbfcfd"))
+        c.setStrokeColor(colors.HexColor("#f1f5f9"))
+        c.setLineWidth(1)
+        c.roundRect(40, banner_y, banner_w, banner_h, 6, fill=1, stroke=1)
+        
+        logo_size = 40
+        num_logos = len(logo_readers)
+        spacing = (banner_w - 40 - (num_logos * logo_size)) / max(num_logos - 1, 1)
+        start_x = 60
+        logo_y = banner_y + (banner_h - logo_size) / 2
+        
+        for idx, reader in enumerate(logo_readers):
+            lx = start_x + idx * (logo_size + spacing)
+            c.drawImage(reader, lx, logo_y, width=logo_size, height=logo_size, mask='auto')
+    
+    # 5. QR Code (Top Right)
     verify_url = f"{frontend_url}/global-academy/verify/{cert_code}"
     qr_bytes = generate_qr_code_bytes(cert_code, frontend_url)
     qr_image_reader = ImageReader(BytesIO(qr_bytes))
     
-    qr_size = 1.2 * inch
+    qr_size = 1.15 * inch
+    qr_box_y = height - qr_size - 140
     c.saveState()
-    # Add rounded-corner-like border for QR
     c.setStrokeColor(colors.HexColor("#f3f4f6"))
-    c.roundRect(width - qr_size - 60, height - qr_size - 60, qr_size + 20, qr_size + 20, 12, fill=0, stroke=1)
-    c.drawImage(qr_image_reader, width - qr_size - 50, height - qr_size - 50, width=qr_size, height=qr_size)
+    c.roundRect(width - qr_size - 60, qr_box_y, qr_size + 16, qr_size + 16, 10, fill=0, stroke=1)
+    c.drawImage(qr_image_reader, width - qr_size - 52, qr_box_y + 8, width=qr_size, height=qr_size)
     c.restoreState()
     
-    # 5. Header Section (Left)
+    # 6. Header Section (Left)
     c.setFillColor(colors.HexColor("#1f3b45")) # ACCENT_COLOR
-    c.setFont("Helvetica-Bold", 32)
-    c.drawString(60, height - 80, "Certificate of Achievement")
+    c.setFont("Helvetica-Bold", 30)
+    c.drawString(60, height - 110, "Certificate of Achievement")
     
     c.setFont("Helvetica-Bold", 10)
     c.setFillColor(colors.HexColor("#6b7280")) # gray-500
-    c.drawString(60, height - 100, "SVARP GLOBAL ACADEMY")
+    c.drawString(60, height - 128, "SVARP GLOBAL ACADEMY")
     
-    # 6. Main Content Layout
+    # 7. Main Content Layout
     
-    # 6a. "This is to certify that"
+    # 7a. "This is to certify that"
     c.setFillColor(colors.HexColor("#6b7280"))
-    c.setFont("Helvetica-Oblique", 18)
-    c.drawCentredString(width / 2.0, height / 2.0 + 100, "This is to certify that")
+    c.setFont("Helvetica-Oblique", 16)
+    c.drawCentredString(width / 2.0, height / 2.0 + 75, "This is to certify that")
     
-    # 6b. Learner Name
+    # 7b. Learner Name
     c.setFillColor(colors.HexColor("#1f3b45"))
-    c.setFont("Helvetica-Bold", 42)
-    c.drawCentredString(width / 2.0, height / 2.0 + 50, student_name)
+    c.setFont("Helvetica-Bold", 38)
+    c.drawCentredString(width / 2.0, height / 2.0 + 30, student_name)
     
-    # 6c. Profile Image (Circular)
+    # 7c. Profile Image (Circular)
     profile_reader = None
     if profile_picture_url:
         try:
@@ -175,8 +215,8 @@ def generate_certificate_bytes(
             except Exception:
                 profile_reader = None
 
-    img_y = height / 2.0 - 60
-    img_size = 3.5 * cm
+    img_y = height / 2.0 - 75
+    img_size = 3.2 * cm
     
     c.saveState()
     # Draw circular clipper
@@ -197,12 +237,12 @@ def generate_certificate_bytes(
     c.setLineWidth(3)
     c.circle(width/2, img_y + img_size/2, img_size/2, stroke=1, fill=0)
     
-    # 6d. "has successfully completed"
+    # 7d. "has successfully completed"
     c.setFillColor(colors.HexColor("#6b7280"))
-    c.setFont("Helvetica", 14)
+    c.setFont("Helvetica", 13)
     c.drawCentredString(width / 2.0, img_y - 25, "has successfully completed the course")
     
-    # 6e. Course Title (With dynamic multi-line wrapping and font scaling)
+    # 7e. Course Title (With dynamic multi-line wrapping and font scaling)
     c.setFillColor(colors.HexColor("#9bcf9b"))
     import textwrap
 
@@ -228,7 +268,7 @@ def generate_certificate_bytes(
         c.drawCentredString(width / 2.0, current_title_y, line)
         current_title_y -= leading
 
-    # 7. Honour Badge (if progress >= 75)
+    # 8. Honour Badge (if progress >= 75)
     if progress >= 75:
         c.setFillColor(colors.HexColor("#9bcf9b"))
         c.setStrokeColor(colors.white)
